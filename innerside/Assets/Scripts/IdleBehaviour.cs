@@ -8,10 +8,11 @@ public class IdleBehaviour : StateMachineBehaviour
 
     private bool IsIdle { get; set; }
     private float IdleTime { get; set; }
+    private int IdleAnimation { get; set; }
     // OnStateEnter is called when a transition starts and the state machine starts to evaluate this state
     override public void OnStateEnter(Animator animator, AnimatorStateInfo stateInfo, int layerIndex)
     {
-        ResetIdle(animator);
+        ResetIdle();
     }
 
     // OnStateUpdate is called on each Update frame between OnStateEnter and OnStateExit callbacks
@@ -21,23 +22,27 @@ public class IdleBehaviour : StateMachineBehaviour
         {
             IdleTime += Time.deltaTime;
 
-            if(IdleTime > TimeUntilIdle){
+            if(IdleTime > TimeUntilIdle && stateInfo.normalizedTime % 1 < 0.02f){
                 IsIdle = true;
-                int idleAnimation = Random.Range(1, NumberOfIdleAnimations + 1);
-
-                animator.SetFloat("IdleAnimation", idleAnimation);
+                IdleAnimation = Random.Range(1, NumberOfIdleAnimations + 1);
+                IdleAnimation = IdleAnimation * 2 - 1;
+                
+                animator.SetFloat("IdleAnimation", IdleAnimation - 1);
             }
         }
-        else if(stateInfo.normalizedTime % 1 > 0.98){
-            ResetIdle(animator);
+        else if(stateInfo.normalizedTime % 1 > 0.98f){
+            ResetIdle();
         }
+
+        animator.SetFloat("IdleAnimation", IdleAnimation, 0.2f, Time.deltaTime);
     }
 
-    private void ResetIdle(Animator animator){
+    private void ResetIdle(){
+        if(IsIdle){
+            IdleAnimation--;
+        }
         IsIdle = false;
         IdleTime = 0;
-
-        animator.SetFloat("IdleAnimation", 0);
     }
 
     // OnStateExit is called when a transition ends and the state machine finishes evaluating this state
