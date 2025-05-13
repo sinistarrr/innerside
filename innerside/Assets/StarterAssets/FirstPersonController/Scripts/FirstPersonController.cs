@@ -60,6 +60,10 @@ namespace StarterAssets
 		private float _verticalVelocity;
 		private float _terminalVelocity = 53.0f;
 
+		// animator
+		private int _isWalkingHash;
+		private int _isRunningHash;
+
 		// timeout deltatime
 		private float _jumpTimeoutDelta;
 		private float _fallTimeoutDelta;
@@ -71,6 +75,8 @@ namespace StarterAssets
 		private CharacterController _controller;
 		private StarterAssetsInputs _input;
 		private GameObject _mainCamera;
+		// variable to store character animator component, make sure there is no multiple animator components to avoid problems
+		private Animator _animator;
 
 		private const float _threshold = 0.01f;
 
@@ -99,6 +105,14 @@ namespace StarterAssets
 		{
 			_controller = GetComponent<CharacterController>();
 			_input = GetComponent<StarterAssetsInputs>();
+			_animator = GetComponentInChildren<Animator>();
+			if(_animator == null){
+				Debug.LogError( "Character's Animator component missing on First Person Controller");
+			}
+			else{
+				_isWalkingHash = Animator.StringToHash("IsWalking");
+				_isRunningHash = Animator.StringToHash("IsRunning");
+			}
 #if ENABLE_INPUT_SYSTEM
 			_playerInput = GetComponent<PlayerInput>();
 #else
@@ -160,6 +174,7 @@ namespace StarterAssets
 
 			// note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
 			// if there is no input, set the target speed to 0
+			// if (_input.move == Vector2.zero) targetSpeed = 0.0f;
 			if (_input.move == Vector2.zero) targetSpeed = 0.0f;
 
 			// a reference to the players current horizontal velocity
@@ -196,6 +211,9 @@ namespace StarterAssets
 
 			// move the player
 			_controller.Move(inputDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+
+			
+			Debug.Log("_input.analogMovement : " + _input.analogMovement);
 		}
 
 		private void JumpAndGravity()
