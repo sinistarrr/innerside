@@ -13,9 +13,9 @@ namespace StarterAssets
 	{
 		[Header("Player")]
 		[Tooltip("Move speed of the character in m/s")]
-		public float MoveSpeed = 4.0f;
+		public float MoveSpeed = 6.0f;
 		[Tooltip("Sprint speed of the character in m/s")]
-		public float SprintSpeed = 6.0f;
+		public float SprintSpeed = 8.0f;
 		[Tooltip("Rotation speed of the character")]
 		public float RotationSpeed = 1.0f;
 		[Tooltip("Acceleration and deceleration")]
@@ -61,7 +61,6 @@ namespace StarterAssets
 		private float _terminalVelocity = 53.0f;
 
 		// animator
-		private int _isWalkingHash;
 		private int _isRunningHash;
 
 		// timeout deltatime
@@ -110,7 +109,6 @@ namespace StarterAssets
 				Debug.LogError( "Character's Animator component missing on First Person Controller");
 			}
 			else{
-				_isWalkingHash = Animator.StringToHash("IsWalking");
 				_isRunningHash = Animator.StringToHash("IsRunning");
 			}
 #if ENABLE_INPUT_SYSTEM
@@ -167,6 +165,8 @@ namespace StarterAssets
 
 		private void Move()
 		{
+			//get parameter values from Animator
+			bool isRunning = _animator.GetBool("isRunning");
 			// set target speed based on move speed, sprint speed and if sprint is pressed
 			float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
 
@@ -175,13 +175,19 @@ namespace StarterAssets
 			// note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
 			// if there is no input, set the target speed to 0
 			// if (_input.move == Vector2.zero) targetSpeed = 0.0f;
-			if (_input.move == Vector2.zero) targetSpeed = 0.0f;
+			if (_input.move == Vector2.zero){
+				targetSpeed = 0.0f;
+				if(isRunning){
+					_animator.SetBool("isRunning", false);
+				}
+			}
+			
 
 			// a reference to the players current horizontal velocity
 			float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
 
 			float speedOffset = 0.1f;
-			float inputMagnitude = _input.analogMovement ? _input.move.magnitude : 1f;
+			float inputMagnitude = !IsCurrentDeviceMouse ? _input.move.magnitude : 1f;		
 
 			// accelerate or decelerate to target speed
 			if (currentHorizontalSpeed < targetSpeed - speedOffset || currentHorizontalSpeed > targetSpeed + speedOffset)
@@ -205,15 +211,20 @@ namespace StarterAssets
 			// if there is a move input rotate player when the player is moving
 			if (_input.move != Vector2.zero)
 			{
+				// animator
+				if(!isRunning) {
+					_animator.SetBool("isRunning", true);
+				}
 				// move
 				inputDirection = transform.right * _input.move.x + transform.forward * _input.move.y;
 			}
 
+			// move the animator
+			_animator.SetFloat("Velocity", _speed / SprintSpeed);
 			// move the player
 			_controller.Move(inputDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
-
 			
-			Debug.Log("_input.analogMovement : " + _input.analogMovement);
+			
 		}
 
 		private void JumpAndGravity()
