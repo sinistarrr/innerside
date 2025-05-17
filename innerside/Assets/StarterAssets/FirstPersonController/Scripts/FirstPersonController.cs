@@ -1,4 +1,5 @@
-﻿using UnityEngine;
+﻿using System;
+using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
 #endif
@@ -16,6 +17,8 @@ namespace StarterAssets
 		public float MoveSpeed = 6.0f;
 		[Tooltip("Sprint speed of the character in m/s")]
 		public float SprintSpeed = 8.0f;
+		[Tooltip("Strafe speed of the character in m/s")]
+		public float StrafeSpeed = 4.0f;
 		[Tooltip("Rotation speed of the character")]
 		public float RotationSpeed = 1.0f;
 		[Tooltip("Acceleration and deceleration")]
@@ -59,9 +62,6 @@ namespace StarterAssets
 		private float _rotationVelocity;
 		private float _verticalVelocity;
 		private float _terminalVelocity = 53.0f;
-
-		// animator
-		private int _isRunningHash;
 
 		// timeout deltatime
 		private float _jumpTimeoutDelta;
@@ -107,9 +107,6 @@ namespace StarterAssets
 			_animator = GetComponentInChildren<Animator>();
 			if(_animator == null){
 				Debug.LogError( "Character's Animator component missing on First Person Controller");
-			}
-			else{
-				_isRunningHash = Animator.StringToHash("IsRunning");
 			}
 #if ENABLE_INPUT_SYSTEM
 			_playerInput = GetComponent<PlayerInput>();
@@ -169,25 +166,48 @@ namespace StarterAssets
 			bool isRunning = _animator.GetBool("isRunning");
 			// set target speed based on move speed, sprint speed and if sprint is pressed
 			float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
+			// a reference to the players current horizontal velocity
+			float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
+			float speedOffset = 0.1f;
+			float inputMagnitude = !IsCurrentDeviceMouse ? _input.move.magnitude : 1f;
 
 			// a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
 
 			// note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
 			// if there is no input, set the target speed to 0
 			// if (_input.move == Vector2.zero) targetSpeed = 0.0f;
-			if (_input.move == Vector2.zero){
+			if (_input.move == Vector2.zero)
+			{
 				targetSpeed = 0.0f;
-				if(isRunning){
+				if (isRunning)
+				{
 					_animator.SetBool("isRunning", false);
 				}
 			}
-			
 
-			// a reference to the players current horizontal velocity
-			float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
+			// normalise input direction
+			Vector3 inputDirection = new Vector3(_input.move.x, 0.0f, _input.move.y).normalized;
 
-			float speedOffset = 0.1f;
-			float inputMagnitude = !IsCurrentDeviceMouse ? _input.move.magnitude : 1f;		
+			// note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
+			// if there is a move input rotate player when the player is moving
+			if (_input.move != Vector2.zero)
+			{
+				// animator
+				if (!isRunning)
+				{
+					_animator.SetBool("isRunning", true);
+				}
+				// move
+				inputDirection = transform.right * _input.move.x + transform.forward * _input.move.y;
+
+				if (!IsMovingForward())
+				{
+					targetSpeed = StrafeSpeed;
+				}
+			}
+
+			Vector3 velocity = transform.InverseTransformDirection(_controller.velocity);
+			Vector3 localInputDirection = transform.InverseTransformDirection(inputDirection);
 
 			// accelerate or decelerate to target speed
 			if (currentHorizontalSpeed < targetSpeed - speedOffset || currentHorizontalSpeed > targetSpeed + speedOffset)
@@ -204,27 +224,32 @@ namespace StarterAssets
 				_speed = targetSpeed;
 			}
 
-			// normalise input direction
-			Vector3 inputDirection = new Vector3(_input.move.x, 0.0f, _input.move.y).normalized;
 
-			// note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
-			// if there is a move input rotate player when the player is moving
-			if (_input.move != Vector2.zero)
-			{
-				// animator
-				if(!isRunning) {
-					_animator.SetBool("isRunning", true);
-				}
-				// move
-				inputDirection = transform.right * _input.move.x + transform.forward * _input.move.y;
-			}
+			float strafeVelocity = Mathf.Clamp(velocity.x, -(_speed * 0.666f), _speed * 0.666f);
+			float forwardVelocity = Mathf.Clamp(velocity.z, -(_speed * 0.333f), _speed);
+			float clampedSpeed = strafeVelocity * localInputDirection.x + forwardVelocity * localInputDirection.z;
 
 			// move the animator
 			_animator.SetFloat("Velocity", _speed / SprintSpeed);
+			_animator.SetFloat("VelocityX", velocity.x / SprintSpeed);
+			_animator.SetFloat("VelocityZ", velocity.z / SprintSpeed);
 			// move the player
+			// _controller.Move(inputDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 			_controller.Move(inputDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+
+			// Debug.Log("velolocity = " + new Vector3(strafeVelocity, 0.0f, forwardVelocity));
+			// Debug.Log("clampedSpeed = " + clampedSpeed);
+			// Debug.Log("inputDirection" + inputDirection);
+			// Debug.Log("velocity3 = " + velocity);
+			Debug.Log("Speed = " + _speed);
+			Debug.Log("localInputDirection = " + localInputDirection);
+			Debug.Log("_input.move = " + _input.move);
+			Debug.Log("_input.move.normalized = " + _input.move.normalized);
+			Debug.Log("targetSpeed = " + targetSpeed);
 			
-			
+			// Debug.Log("Vector2 Angle = " + Vector2.Angle());
+
+
 		}
 
 		private void JumpAndGravity()
@@ -280,6 +305,14 @@ namespace StarterAssets
 			if (lfAngle < -360f) lfAngle += 360f;
 			if (lfAngle > 360f) lfAngle -= 360f;
 			return Mathf.Clamp(lfAngle, lfMin, lfMax);
+		}
+
+		private bool IsMovingForward()
+		{
+			float diagDirNormalized = Mathf.Sqrt(2) / 2;
+			float diagDirThreshold = 0.05f;
+			return (_input.move.normalized.y > diagDirNormalized) && (_input.move.normalized.x > -diagDirNormalized - diagDirThreshold) ||
+					(_input.move.normalized.y > diagDirNormalized) && (_input.move.normalized.x < diagDirNormalized + diagDirThreshold);
 		}
 
 		private void OnDrawGizmosSelected()
