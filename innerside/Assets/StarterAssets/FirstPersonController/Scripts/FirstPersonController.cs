@@ -121,9 +121,16 @@ namespace StarterAssets
 
 		private void Update()
 		{
+			// Debug.Log("1 velocity = " + _controller.velocity);
+			// Debug.Log("1 velocity.magnitude = " + _controller.velocity.magnitude);
+			// Debug.Log("1 velocity.normalized = " + _controller.velocity.normalized);
+			// Debug.Log("1 input.move = " + _input.move);
+			// Debug.Log("1 input.move.magnitude = " + _input.move.magnitude);
+			// Debug.Log("1 _speed = " + _speed);
 			JumpAndGravity();
 			GroundedCheck();
 			Move();
+			
 		}
 
 		private void LateUpdate()
@@ -207,8 +214,8 @@ namespace StarterAssets
 			}
 
 			Vector3 velocity = transform.InverseTransformDirection(_controller.velocity);
-			Vector3 localInputDirection = transform.InverseTransformDirection(inputDirection);
-
+			// Vector3 localInputDirection = transform.InverseTransformDirection(inputDirection);
+			
 			// accelerate or decelerate to target speed
 			if (currentHorizontalSpeed < targetSpeed - speedOffset || currentHorizontalSpeed > targetSpeed + speedOffset)
 			{
@@ -224,10 +231,22 @@ namespace StarterAssets
 				_speed = targetSpeed;
 			}
 
+			if (_input.move == Vector2.zero && currentHorizontalSpeed > 0)
+			{
+				float decelerationRate = SpeedChangeRate / 100.0f;
+				_speed -= decelerationRate * Time.deltaTime;
+				_speed = Mathf.Max(_speed, 0);
+				Debug.Log("1 inputDirection = " + inputDirection);
+				Debug.Log("1 _controller.velocity.normalized = " + _controller.velocity.normalized);
+				inputDirection = new Vector3(_controller.velocity.x, 0f, _controller.velocity.z).normalized;
+				Debug.Log("2 inputDirection = " + inputDirection);
+				Debug.Log("2 _controller.velocity.normalized = " + _controller.velocity.normalized);
+            }
 
-			float strafeVelocity = Mathf.Clamp(velocity.x, -(_speed * 0.666f), _speed * 0.666f);
-			float forwardVelocity = Mathf.Clamp(velocity.z, -(_speed * 0.333f), _speed);
-			float clampedSpeed = strafeVelocity * localInputDirection.x + forwardVelocity * localInputDirection.z;
+
+			// float strafeVelocity = Mathf.Clamp(velocity.x, -(_speed * 0.666f), _speed * 0.666f);
+			// float forwardVelocity = Mathf.Clamp(velocity.z, -(_speed * 0.333f), _speed);
+			// float clampedSpeed = strafeVelocity * localInputDirection.x + forwardVelocity * localInputDirection.z;
 
 			// move the animator
 			_animator.SetFloat("Velocity", _speed / SprintSpeed);
@@ -241,11 +260,11 @@ namespace StarterAssets
 			// Debug.Log("clampedSpeed = " + clampedSpeed);
 			// Debug.Log("inputDirection" + inputDirection);
 			// Debug.Log("velocity3 = " + velocity);
-			Debug.Log("Speed = " + _speed);
-			Debug.Log("localInputDirection = " + localInputDirection);
-			Debug.Log("_input.move = " + _input.move);
-			Debug.Log("_input.move.normalized = " + _input.move.normalized);
-			Debug.Log("targetSpeed = " + targetSpeed);
+			// Debug.Log("Speed = " + _speed);
+			// Debug.Log("localInputDirection = " + localInputDirection);
+			// Debug.Log("_input.move = " + _input.move);
+			// Debug.Log("_input.move.normalized = " + _input.move.normalized);
+			// Debug.Log("targetSpeed = " + targetSpeed);
 			
 			// Debug.Log("Vector2 Angle = " + Vector2.Angle());
 
@@ -311,8 +330,8 @@ namespace StarterAssets
 		{
 			float diagDirNormalized = Mathf.Sqrt(2) / 2;
 			float diagDirThreshold = 0.05f;
-			return (_input.move.normalized.y > diagDirNormalized) && (_input.move.normalized.x > -diagDirNormalized - diagDirThreshold) ||
-					(_input.move.normalized.y > diagDirNormalized) && (_input.move.normalized.x < diagDirNormalized + diagDirThreshold);
+			return (_input.move.normalized.y > diagDirNormalized - diagDirThreshold) && (_input.move.normalized.x > -diagDirNormalized - diagDirThreshold) ||
+					(_input.move.normalized.y > diagDirNormalized - diagDirThreshold) && (_input.move.normalized.x < diagDirNormalized + diagDirThreshold);
 		}
 
 		private void OnDrawGizmosSelected()
