@@ -143,6 +143,7 @@ namespace StarterAssets
 			// set sphere position, with offset
 			Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z);
 			Grounded = Physics.CheckSphere(spherePosition, GroundedRadius, GroundLayers, QueryTriggerInteraction.Ignore);
+			_animator.SetBool("IsGrounded", Grounded);
 		}
 
 		private void CameraRotation()
@@ -170,7 +171,7 @@ namespace StarterAssets
 		private void Move()
 		{
 			//get parameter values from Animator
-			bool isRunning = _animator.GetBool("isRunning");
+			// bool isRunning = _animator.GetBool("isRunning");
 			// set target speed based on move speed, sprint speed and if sprint is pressed
 			float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
 			// a reference to the players current horizontal velocity
@@ -186,10 +187,10 @@ namespace StarterAssets
 			if (_input.move == Vector2.zero)
 			{
 				targetSpeed = 0.0f;
-				if (isRunning)
-				{
-					_animator.SetBool("isRunning", false);
-				}
+				// if (isRunning)
+				// {
+				// 	_animator.SetBool("isRunning", false);
+				// }
 			}
 
 			// normalise input direction
@@ -200,10 +201,10 @@ namespace StarterAssets
 			if (_input.move != Vector2.zero)
 			{
 				// animator
-				if (!isRunning)
-				{
-					_animator.SetBool("isRunning", true);
-				}
+				// if (!isRunning)
+				// {
+				// 	_animator.SetBool("isRunning", true);
+				// }
 				// move
 				inputDirection = transform.right * _input.move.x + transform.forward * _input.move.y;
 
@@ -236,11 +237,7 @@ namespace StarterAssets
 				float decelerationRate = SpeedChangeRate / 100.0f;
 				_speed -= decelerationRate * Time.deltaTime;
 				_speed = Mathf.Max(_speed, 0);
-				Debug.Log("1 inputDirection = " + inputDirection);
-				Debug.Log("1 _controller.velocity.normalized = " + _controller.velocity.normalized);
 				inputDirection = new Vector3(_controller.velocity.x, 0f, _controller.velocity.z).normalized;
-				Debug.Log("2 inputDirection = " + inputDirection);
-				Debug.Log("2 _controller.velocity.normalized = " + _controller.velocity.normalized);
             }
 
 
@@ -249,11 +246,11 @@ namespace StarterAssets
 			// float clampedSpeed = strafeVelocity * localInputDirection.x + forwardVelocity * localInputDirection.z;
 
 			// move the animator
-			_animator.SetFloat("Velocity", _speed / SprintSpeed);
+			// _animator.SetFloat("Velocity", _speed / SprintSpeed);
 			_animator.SetFloat("VelocityX", velocity.x / SprintSpeed);
 			_animator.SetFloat("VelocityZ", velocity.z / SprintSpeed);
+			_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed);
 			// move the player
-			// _controller.Move(inputDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 			_controller.Move(inputDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
 			// Debug.Log("velolocity = " + new Vector3(strafeVelocity, 0.0f, forwardVelocity));
