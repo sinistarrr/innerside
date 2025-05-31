@@ -23,6 +23,8 @@ namespace StarterAssets
 		public float RotationSpeed = 1.0f;
 		[Tooltip("Acceleration and deceleration")]
 		public float SpeedChangeRate = 10.0f;
+		[Tooltip("Deceleration when turning sharply")]
+		public float SharpTurnDeceleration = 5.0f;
 
 		[Space(10)]
 		[Tooltip("The height the player can jump")]
@@ -62,12 +64,15 @@ namespace StarterAssets
 		private float _rotationVelocity;
 		private float _verticalVelocity;
 		private float _terminalVelocity = 53.0f;
+		private Vector3 _previousDir = Vector3.zero;
 
 		// timeout deltatime
 		private float _jumpTimeoutDelta;
 		private float _fallTimeoutDelta;
 
-	
+		private bool _isReversing = false;
+
+
 #if ENABLE_INPUT_SYSTEM
 		private PlayerInput _playerInput;
 #endif
@@ -83,11 +88,11 @@ namespace StarterAssets
 		{
 			get
 			{
-				#if ENABLE_INPUT_SYSTEM
+#if ENABLE_INPUT_SYSTEM
 				return _playerInput.currentControlScheme == "KeyboardMouse";
-				#else
+#else
 				return false;
-				#endif
+#endif
 			}
 		}
 
@@ -105,8 +110,9 @@ namespace StarterAssets
 			_controller = GetComponent<CharacterController>();
 			_input = GetComponent<StarterAssetsInputs>();
 			_animator = GetComponentInChildren<Animator>();
-			if(_animator == null){
-				Debug.LogError( "Character's Animator component missing on First Person Controller");
+			if (_animator == null)
+			{
+				Debug.LogError("Character's Animator component missing on First Person Controller");
 			}
 #if ENABLE_INPUT_SYSTEM
 			_playerInput = GetComponent<PlayerInput>();
@@ -121,16 +127,12 @@ namespace StarterAssets
 
 		private void Update()
 		{
-			// Debug.Log("1 velocity = " + _controller.velocity);
-			// Debug.Log("1 velocity.magnitude = " + _controller.velocity.magnitude);
-			// Debug.Log("1 velocity.normalized = " + _controller.velocity.normalized);
-			// Debug.Log("1 input.move = " + _input.move);
-			// Debug.Log("1 input.move.magnitude = " + _input.move.magnitude);
-			// Debug.Log("1 _speed = " + _speed);
+
 			JumpAndGravity();
 			GroundedCheck();
 			Move();
-			
+
+
 		}
 
 		private void LateUpdate()
@@ -153,7 +155,7 @@ namespace StarterAssets
 			{
 				//Don't multiply mouse input by Time.deltaTime
 				float deltaTimeMultiplier = IsCurrentDeviceMouse ? 1.0f : Time.deltaTime;
-				
+
 				_cinemachineTargetPitch += _input.look.y * RotationSpeed * deltaTimeMultiplier;
 				_rotationVelocity = _input.look.x * RotationSpeed * deltaTimeMultiplier;
 
@@ -170,61 +172,89 @@ namespace StarterAssets
 
 		private void Move()
 		{
-			//get parameter values from Animator
-			// bool isRunning = _animator.GetBool("isRunning");
 			// set target speed based on move speed, sprint speed and if sprint is pressed
 			float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
-			// a reference to the players current horizontal velocity
 			float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
 			float speedOffset = 0.1f;
 			float inputMagnitude = !IsCurrentDeviceMouse ? _input.move.magnitude : 1f;
 
-			// a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
+			// calculate inputDirection
+			Vector3 inputDirection = transform.right * _input.move.x + transform.forward * _input.move.y;
+			inputDirection = inputDirection.normalized;
 
-			// note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
-			// if there is no input, set the target speed to 0
-			// if (_input.move == Vector2.zero) targetSpeed = 0.0f;
-			if (_input.move == Vector2.zero)
+			// calculate direction change value
+			float directionChangeValue = Vector3.Dot(_previousDir, inputDirection);
+
+			if (!_isReversing && directionChangeValue < 0 && _speed > 0.1f && inputDirection != Vector3.zero)
 			{
-				targetSpeed = 0.0f;
-				// if (isRunning)
-				// {
-				// 	_animator.SetBool("isRunning", false);
-				// }
+				_isReversing = true;
 			}
 
-			// normalise input direction
-			Vector3 inputDirection = new Vector3(_input.move.x, 0.0f, _input.move.y).normalized;
-
-			// note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
-			// if there is a move input rotate player when the player is moving
-			if (_input.move != Vector2.zero)
+			if (_isReversing)
 			{
-				// animator
-				// if (!isRunning)
-				// {
-				// 	_animator.SetBool("isRunning", true);
-				// }
-				// move
-				inputDirection = transform.right * _input.move.x + transform.forward * _input.move.y;
+				float newDirectionChange = Vector3.Dot(_previousDir, inputDirection);
 
-				if (!IsMovingForward())
+				// if we've stopped, or the player released the key, or tries a non-opposite direction, cancel reversal lock
+				if (_speed <= 0.05f || inputDirection == Vector3.zero || newDirectionChange >= 0)
 				{
-					targetSpeed = StrafeSpeed;
+					_isReversing = false;
+					if (inputDirection != Vector3.zero)
+						_previousDir = inputDirection;
+				}
+				else
+				{
+					// custom fast deceleration, always in current velocity direction
+					float customDecelerationRate = SpeedChangeRate * SharpTurnDeceleration; // faster than normal, tweak as needed
+					_speed -= customDecelerationRate * Time.deltaTime;
+					_speed = Mathf.Max(_speed, 0);
+
+					// decelerate in the direction of current velocity, not _previousDir
+					Vector3 velocityDir = new Vector3(_controller.velocity.x, 0f, _controller.velocity.z).normalized;
+					inputDirection = velocityDir;
+
+					
+					_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+
+					// update animator here
+					Vector3 reversalRelativeVelocity = transform.InverseTransformDirection(_controller.velocity);
+					_animator.SetFloat("VelocityX", reversalRelativeVelocity.x / SprintSpeed);
+					_animator.SetFloat("VelocityZ", reversalRelativeVelocity.z / SprintSpeed);
+					_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed);
+
+					// SKIP the rest of Move() while reversing
+					return;
 				}
 			}
 
-			Vector3 velocity = transform.InverseTransformDirection(_controller.velocity);
-			// Vector3 localInputDirection = transform.InverseTransformDirection(inputDirection);
-			
-			// accelerate or decelerate to target speed
+			// now, use inputDirection for all movement logic below
+			if (_input.move == Vector2.zero)
+			{
+				targetSpeed = 0.0f;
+			}
+			else
+			{
+				if (!IsMovingForward())
+				{
+					targetSpeed = inputMagnitude * StrafeSpeed;
+				}
+				else
+				{
+					if (targetSpeed == SprintSpeed)
+					{
+						targetSpeed = inputMagnitude * SprintSpeed;
+					}
+					else
+					{
+						targetSpeed = inputMagnitude * MoveSpeed;
+					}
+				}
+			}
+
+			Vector3 relativeVelocity = transform.InverseTransformDirection(_controller.velocity);
+
 			if (currentHorizontalSpeed < targetSpeed - speedOffset || currentHorizontalSpeed > targetSpeed + speedOffset)
 			{
-				// creates curved result rather than a linear one giving a more organic speed change
-				// note T in Lerp is clamped, so we don't need to clamp our speed
 				_speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude, Time.deltaTime * SpeedChangeRate);
-
-				// round speed to 3 decimal places
 				_speed = Mathf.Round(_speed * 1000f) / 1000f;
 			}
 			else
@@ -232,40 +262,23 @@ namespace StarterAssets
 				_speed = targetSpeed;
 			}
 
-			if (_input.move == Vector2.zero && currentHorizontalSpeed > 0)
+			// Only decelerate and overwrite inputDirection if the player is not pressing any key AND not reversing
+			if (_input.move == Vector2.zero && currentHorizontalSpeed > 0 && !_isReversing)
 			{
 				float decelerationRate = SpeedChangeRate / 100.0f;
 				_speed -= decelerationRate * Time.deltaTime;
 				_speed = Mathf.Max(_speed, 0);
 				inputDirection = new Vector3(_controller.velocity.x, 0f, _controller.velocity.z).normalized;
-            }
+			}
 
-
-			// float strafeVelocity = Mathf.Clamp(velocity.x, -(_speed * 0.666f), _speed * 0.666f);
-			// float forwardVelocity = Mathf.Clamp(velocity.z, -(_speed * 0.333f), _speed);
-			// float clampedSpeed = strafeVelocity * localInputDirection.x + forwardVelocity * localInputDirection.z;
-
-			// move the animator
-			// _animator.SetFloat("Velocity", _speed / SprintSpeed);
-			_animator.SetFloat("VelocityX", velocity.x / SprintSpeed);
-			_animator.SetFloat("VelocityZ", velocity.z / SprintSpeed);
+			_animator.SetFloat("VelocityX", relativeVelocity.x / SprintSpeed);
+			_animator.SetFloat("VelocityZ", relativeVelocity.z / SprintSpeed);
 			_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed);
-			// move the player
-			_controller.Move(inputDirection.normalized * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
-			// Debug.Log("velolocity = " + new Vector3(strafeVelocity, 0.0f, forwardVelocity));
-			// Debug.Log("clampedSpeed = " + clampedSpeed);
-			// Debug.Log("inputDirection" + inputDirection);
-			// Debug.Log("velocity3 = " + velocity);
-			// Debug.Log("Speed = " + _speed);
-			// Debug.Log("localInputDirection = " + localInputDirection);
-			// Debug.Log("_input.move = " + _input.move);
-			// Debug.Log("_input.move.normalized = " + _input.move.normalized);
-			// Debug.Log("targetSpeed = " + targetSpeed);
-			
-			// Debug.Log("Vector2 Angle = " + Vector2.Angle());
+			_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
-
+			if (inputDirection != Vector3.zero && !_isReversing)
+				_previousDir = inputDirection;
 		}
 
 		private void JumpAndGravity()
