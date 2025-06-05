@@ -17,6 +17,8 @@ namespace StarterAssets
 		public float MoveSpeed = 6.0f;
 		[Tooltip("Sprint speed of the character in m/s")]
 		public float SprintSpeed = 8.0f;
+		[Tooltip("Crouch speed of the character in m/s")]
+		public float CrouchSpeed = 2.0f;
 		[Tooltip("Strafe speed of the character in m/s")]
 		public float StrafeSpeed = 4.0f;
 		[Tooltip("Rotation speed of the character")]
@@ -25,6 +27,8 @@ namespace StarterAssets
 		public float SpeedChangeRate = 10.0f;
 		[Tooltip("Deceleration when turning sharply")]
 		public float SharpTurnDeceleration = 5.0f;
+		[Tooltip("Character animations transitions smoothness value (Damping)")]
+		public float Damping = 0.15f;
 
 		[Space(10)]
 		[Tooltip("The height the player can jump")]
@@ -37,6 +41,8 @@ namespace StarterAssets
 		public float JumpTimeout = 0.1f;
 		[Tooltip("Time required to pass before entering the fall state. Useful for walking down stairs")]
 		public float FallTimeout = 0.15f;
+		[Tooltip("Time required to pass before being able to crouch again. Set to 0f to instantly crouch again")]
+		public float CrouchTimeout = 0.1f;
 
 		[Header("Player Grounded")]
 		[Tooltip("If the character is grounded or not. Not part of the CharacterController built in grounded check")]
@@ -47,6 +53,10 @@ namespace StarterAssets
 		public float GroundedRadius = 0.5f;
 		[Tooltip("What layers the character uses as ground")]
 		public LayerMask GroundLayers;
+
+		[Header("Player Crouching")]
+		[Tooltip("If the character is crouched or not.")]
+		public bool Crouching = false;
 
 		[Header("Cinemachine")]
 		[Tooltip("The follow target set in the Cinemachine Virtual Camera that the camera will follow")]
@@ -69,8 +79,13 @@ namespace StarterAssets
 		// timeout deltatime
 		private float _jumpTimeoutDelta;
 		private float _fallTimeoutDelta;
+		private float _crouchTimeoutDelta;
 
 		private bool _isReversing = false;
+		private float _standingHeight;
+		private float _standingYCenter;
+		private float _crouchedHeight;
+		private float _crouchedYCenter;
 
 
 #if ENABLE_INPUT_SYSTEM
@@ -123,6 +138,13 @@ namespace StarterAssets
 			// reset our timeouts on start
 			_jumpTimeoutDelta = JumpTimeout;
 			_fallTimeoutDelta = FallTimeout;
+			_crouchTimeoutDelta = CrouchTimeout;
+
+			// set the standing and crouched height and center in variables once to avoid potential calculations
+			_standingHeight = _controller.height;
+			_standingYCenter = _controller.center.y;
+			_crouchedHeight = _controller.height / 2;
+			_crouchedYCenter = _controller.center.y / 2;
 		}
 
 		private void Update()
@@ -130,6 +152,8 @@ namespace StarterAssets
 
 			JumpAndGravity();
 			GroundedCheck();
+			// CrouchingAndSliding();
+
 			Move();
 
 
@@ -173,7 +197,8 @@ namespace StarterAssets
 		private void Move()
 		{
 			// set target speed based on move speed, sprint speed and if sprint is pressed
-			float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
+			// float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
+			float targetSpeed = Crouching ? CrouchSpeed : _input.sprint ? SprintSpeed : MoveSpeed;
 			float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
 			float speedOffset = 0.1f;
 			float inputMagnitude = !IsCurrentDeviceMouse ? _input.move.magnitude : 1f;
@@ -185,6 +210,8 @@ namespace StarterAssets
 			// calculate direction change value
 			float directionChangeValue = Vector3.Dot(_previousDir, inputDirection);
 
+			// -- HANDLING OF THE REVERSAL LOCK --
+			// This is for when the player changes direction quickly, like when reversing. It will set a lock to prevent the player from reversing too quickly.
 			if (!_isReversing && directionChangeValue < 0 && _speed > 0.1f && inputDirection != Vector3.zero)
 			{
 				_isReversing = true;
@@ -212,34 +239,42 @@ namespace StarterAssets
 					Vector3 velocityDir = new Vector3(_controller.velocity.x, 0f, _controller.velocity.z).normalized;
 					inputDirection = velocityDir;
 
-					
+
 					_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
 					// update animator here
 					Vector3 reversalRelativeVelocity = transform.InverseTransformDirection(_controller.velocity);
-					_animator.SetFloat("VelocityX", reversalRelativeVelocity.x / SprintSpeed);
-					_animator.SetFloat("VelocityZ", reversalRelativeVelocity.z / SprintSpeed);
-					_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed);
+					_animator.SetFloat("VelocityX", reversalRelativeVelocity.x / SprintSpeed, Damping, Time.deltaTime);
+					_animator.SetFloat("VelocityZ", reversalRelativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
+					_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed, Damping, Time.deltaTime);
 
 					// SKIP the rest of Move() while reversing
 					return;
 				}
 			}
+			// -- HANDLING OF THE REVERSAL LOCK END --
 
-			// now, use inputDirection for all movement logic below
+			// -- MOVEMENT LOGIC --
+			// If the player stopped touching any button related to horizontal movement, we set the target speed to 0.
 			if (_input.move == Vector2.zero)
 			{
 				targetSpeed = 0.0f;
 			}
 			else
 			{
-				if (!IsMovingForward())
+				if (Crouching)
+				{
+					targetSpeed = inputMagnitude * CrouchSpeed;
+				}
+				// If the player is not moving forward, we set the target speed to StrafeSpeed since the player is strafing.
+				else if (!IsMovingForward())
 				{
 					targetSpeed = inputMagnitude * StrafeSpeed;
 				}
 				else
 				{
-					if (targetSpeed == SprintSpeed)
+					// If the player is moving forward, we check if they are sprinting. And if they are, we set the target speed to SprintSpeed.
+					if (targetSpeed > (SprintSpeed - speedOffset))
 					{
 						targetSpeed = inputMagnitude * SprintSpeed;
 					}
@@ -250,8 +285,10 @@ namespace StarterAssets
 				}
 			}
 
+			// Calculation of player velocity independent of world direction, in the local space of the player
 			Vector3 relativeVelocity = transform.InverseTransformDirection(_controller.velocity);
-
+			
+			// We verify if the player is moving at target speed or not and adjust acceleration accordingly with Lerp.
 			if (currentHorizontalSpeed < targetSpeed - speedOffset || currentHorizontalSpeed > targetSpeed + speedOffset)
 			{
 				_speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude, Time.deltaTime * SpeedChangeRate);
@@ -262,6 +299,7 @@ namespace StarterAssets
 				_speed = targetSpeed;
 			}
 
+			// This handle the case when the player is not pressing any key and is moving forward, we decelerate the player with a custom deceleration.
 			// Only decelerate and overwrite inputDirection if the player is not pressing any key AND not reversing
 			if (_input.move == Vector2.zero && currentHorizontalSpeed > 0 && !_isReversing)
 			{
@@ -271,14 +309,60 @@ namespace StarterAssets
 				inputDirection = new Vector3(_controller.velocity.x, 0f, _controller.velocity.z).normalized;
 			}
 
-			_animator.SetFloat("VelocityX", relativeVelocity.x / SprintSpeed);
-			_animator.SetFloat("VelocityZ", relativeVelocity.z / SprintSpeed);
-			_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed);
+			// -- END OF MOVEMENT LOGIC -- 
+
+			// -- CROUCHING LOGIC --
+
+			// If the player is pressing the crouch button and not jumping, we toggle on/off crouching.
+			if (_input.crouch && !_input.jump && _crouchTimeoutDelta <= 0.0f)
+			{
+				// reset the crouch timeout timer
+				_crouchTimeoutDelta = CrouchTimeout;
+				Debug.Log("Crouch button pressed");
+				if (!Crouching)
+				{
+					// Crouch logic here, e.g. change collider height, camera position, etc.
+					// _controller.height = CrouchHeight; // Example
+					// _mainCamera.transform.localPosition = new Vector3(0, CrouchCameraHeight, 0); // Example
+					Crouching = true;
+					_controller.height = _crouchedHeight;
+					_controller.center = new Vector3(_controller.center.x, _crouchedYCenter, _controller.center.z);
+				}
+				else
+				{
+					// Uncrouch logic here, e.g. reset collider height, camera position, etc.
+					// _controller.height = NormalHeight; // Example
+					// _mainCamera.transform.localPosition = new Vector3(0, NormalCameraHeight, 0); // Example
+					Crouching = false;
+					_controller.height = _standingHeight;
+					_controller.center = new Vector3(_controller.center.x, _standingYCenter, _controller.center.z);
+				}
+				// if we just crouched, we reset the crouch input to false to prevent toggling crouch again immediately
+				_input.crouch = false;
+			}
+
+			// jump timeout
+			if (_crouchTimeoutDelta >= 0.0f)
+			{
+				_crouchTimeoutDelta -= Time.deltaTime;
+			}
+
+			
+			// -- END OF CROUCHING LOGIC --
+
+			// This links the velocity of the player to the animator, so it can play the correct animations. We smooth the transitions with Damping.
+			_animator.SetFloat("VelocityX", relativeVelocity.x / SprintSpeed, Damping, Time.deltaTime);
+			_animator.SetFloat("VelocityZ", relativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
+			_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed, Damping, Time.deltaTime);
+
+			// This links the crouching state to the animator, so it can play the correct animations.
+			_animator.SetBool("IsCrouching", Crouching);
 
 			_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
 			if (inputDirection != Vector3.zero && !_isReversing)
 				_previousDir = inputDirection;
+			
 		}
 
 		private void JumpAndGravity()
