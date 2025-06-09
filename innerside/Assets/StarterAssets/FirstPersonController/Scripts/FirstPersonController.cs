@@ -42,7 +42,7 @@ namespace StarterAssets
 		[Tooltip("Time required to pass before entering the fall state. Useful for walking down stairs")]
 		public float FallTimeout = 0.15f;
 		[Tooltip("Time required to pass before being able to crouch again. Set to 0f to instantly crouch again")]
-		public float CrouchTimeout = 0.1f;
+		public float CrouchTimeout = 0.2f;
 
 		[Header("Player Grounded")]
 		[Tooltip("If the character is grounded or not. Not part of the CharacterController built in grounded check")]
@@ -57,6 +57,10 @@ namespace StarterAssets
 		[Header("Player Crouching")]
 		[Tooltip("If the character is crouched or not.")]
 		public bool Crouching = false;
+		[Tooltip("Duration of limited movement during sliding")]
+		public float SlidingDuration = 1.0f;
+		[Tooltip("Tweak this value for more/less friction when sliding")]
+		public float SlideFriction = 4.0f;
 
 		[Header("Cinemachine")]
 		[Tooltip("The follow target set in the Cinemachine Virtual Camera that the camera will follow")]
@@ -74,14 +78,17 @@ namespace StarterAssets
 		private float _rotationVelocity;
 		private float _verticalVelocity;
 		private float _terminalVelocity = 53.0f;
+		private float _slideSpeed = 0f;
 		private Vector3 _previousDir = Vector3.zero;
 
 		// timeout deltatime
 		private float _jumpTimeoutDelta;
 		private float _fallTimeoutDelta;
 		private float _crouchTimeoutDelta;
+		private float _slidingTimer = 0f;
 
 		private bool _isReversing = false;
+		private bool _isSliding = false;
 		private float _standingHeight;
 		private float _standingYCenter;
 		private float _crouchedHeight;
@@ -98,6 +105,7 @@ namespace StarterAssets
 		private Animator _animator;
 
 		private const float _threshold = 0.01f;
+		private const float _speedOffset = 0.1f;
 
 		private bool IsCurrentDeviceMouse
 		{
@@ -196,173 +204,29 @@ namespace StarterAssets
 
 		private void Move()
 		{
-			// set target speed based on move speed, sprint speed and if sprint is pressed
-			// float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
-			float targetSpeed = Crouching ? CrouchSpeed : _input.sprint ? SprintSpeed : MoveSpeed;
-			float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
-			float speedOffset = 0.1f;
-			float inputMagnitude = !IsCurrentDeviceMouse ? _input.move.magnitude : 1f;
 
-			// calculate inputDirection
-			Vector3 inputDirection = transform.right * _input.move.x + transform.forward * _input.move.y;
-			inputDirection = inputDirection.normalized;
-
-			// calculate direction change value
+			// calculate input and direction
+			Vector3 inputDirection = GetInputDirection();
 			float directionChangeValue = Vector3.Dot(_previousDir, inputDirection);
+			float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
 
-			// -- HANDLING OF THE REVERSAL LOCK --
-			// This is for when the player changes direction quickly, like when reversing. It will set a lock to prevent the player from reversing too quickly.
-			if (!_isReversing && directionChangeValue < 0 && _speed > 0.1f && inputDirection != Vector3.zero)
-			{
-				_isReversing = true;
-			}
+			// --- Sliding logic ---
+			if (HandleSliding())
+				return;
 
-			if (_isReversing)
-			{
-				float newDirectionChange = Vector3.Dot(_previousDir, inputDirection);
+			// handle reversal (early return if reversing)
+			if (HandleReversal(inputDirection, directionChangeValue))
+				return;
 
-				// if we've stopped, or the player released the key, or tries a non-opposite direction, cancel reversal lock
-				if (_speed <= 0.05f || inputDirection == Vector3.zero || newDirectionChange >= 0)
-				{
-					_isReversing = false;
-					if (inputDirection != Vector3.zero)
-						_previousDir = inputDirection;
-				}
-				else
-				{
-					// custom fast deceleration, always in current velocity direction
-					float customDecelerationRate = SpeedChangeRate * SharpTurnDeceleration; // faster than normal, tweak as needed
-					_speed -= customDecelerationRate * Time.deltaTime;
-					_speed = Mathf.Max(_speed, 0);
+			// handle movement (acceleration/deceleration)
+			HandleMovement(ref inputDirection, currentHorizontalSpeed);
 
-					// decelerate in the direction of current velocity, not _previousDir
-					Vector3 velocityDir = new Vector3(_controller.velocity.x, 0f, _controller.velocity.z).normalized;
-					inputDirection = velocityDir;
+			// handle crouching
+			HandleCrouching(currentHorizontalSpeed);
 
+			// update animator and move character
+			UpdateAnimatorAndMove(inputDirection);
 
-					_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
-
-					// update animator here
-					Vector3 reversalRelativeVelocity = transform.InverseTransformDirection(_controller.velocity);
-					_animator.SetFloat("VelocityX", reversalRelativeVelocity.x / SprintSpeed, Damping, Time.deltaTime);
-					_animator.SetFloat("VelocityZ", reversalRelativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
-					_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed, Damping, Time.deltaTime);
-
-					// SKIP the rest of Move() while reversing
-					return;
-				}
-			}
-			// -- HANDLING OF THE REVERSAL LOCK END --
-
-			// -- MOVEMENT LOGIC --
-			// If the player stopped touching any button related to horizontal movement, we set the target speed to 0.
-			if (_input.move == Vector2.zero)
-			{
-				targetSpeed = 0.0f;
-			}
-			else
-			{
-				if (Crouching)
-				{
-					targetSpeed = inputMagnitude * CrouchSpeed;
-				}
-				// If the player is not moving forward, we set the target speed to StrafeSpeed since the player is strafing.
-				else if (!IsMovingForward())
-				{
-					targetSpeed = inputMagnitude * StrafeSpeed;
-				}
-				else
-				{
-					// If the player is moving forward, we check if they are sprinting. And if they are, we set the target speed to SprintSpeed.
-					if (targetSpeed > (SprintSpeed - speedOffset))
-					{
-						targetSpeed = inputMagnitude * SprintSpeed;
-					}
-					else
-					{
-						targetSpeed = inputMagnitude * MoveSpeed;
-					}
-				}
-			}
-
-			// Calculation of player velocity independent of world direction, in the local space of the player
-			Vector3 relativeVelocity = transform.InverseTransformDirection(_controller.velocity);
-			
-			// We verify if the player is moving at target speed or not and adjust acceleration accordingly with Lerp.
-			if (currentHorizontalSpeed < targetSpeed - speedOffset || currentHorizontalSpeed > targetSpeed + speedOffset)
-			{
-				_speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude, Time.deltaTime * SpeedChangeRate);
-				_speed = Mathf.Round(_speed * 1000f) / 1000f;
-			}
-			else
-			{
-				_speed = targetSpeed;
-			}
-
-			// This handle the case when the player is not pressing any key and is moving forward, we decelerate the player with a custom deceleration.
-			// Only decelerate and overwrite inputDirection if the player is not pressing any key AND not reversing
-			if (_input.move == Vector2.zero && currentHorizontalSpeed > 0 && !_isReversing)
-			{
-				float decelerationRate = SpeedChangeRate / 100.0f;
-				_speed -= decelerationRate * Time.deltaTime;
-				_speed = Mathf.Max(_speed, 0);
-				inputDirection = new Vector3(_controller.velocity.x, 0f, _controller.velocity.z).normalized;
-			}
-
-			// -- END OF MOVEMENT LOGIC -- 
-
-			// -- CROUCHING LOGIC --
-
-			// If the player is pressing the crouch button and not jumping, we toggle on/off crouching.
-			if (_input.crouch && !_input.jump && _crouchTimeoutDelta <= 0.0f)
-			{
-				// reset the crouch timeout timer
-				_crouchTimeoutDelta = CrouchTimeout;
-				Debug.Log("Crouch button pressed");
-				if (!Crouching)
-				{
-					// Crouch logic here, e.g. change collider height, camera position, etc.
-					// _controller.height = CrouchHeight; // Example
-					// _mainCamera.transform.localPosition = new Vector3(0, CrouchCameraHeight, 0); // Example
-					Crouching = true;
-					_controller.height = _crouchedHeight;
-					_controller.center = new Vector3(_controller.center.x, _crouchedYCenter, _controller.center.z);
-				}
-				else
-				{
-					// Uncrouch logic here, e.g. reset collider height, camera position, etc.
-					// _controller.height = NormalHeight; // Example
-					// _mainCamera.transform.localPosition = new Vector3(0, NormalCameraHeight, 0); // Example
-					Crouching = false;
-					_controller.height = _standingHeight;
-					_controller.center = new Vector3(_controller.center.x, _standingYCenter, _controller.center.z);
-				}
-				// if we just crouched, we reset the crouch input to false to prevent toggling crouch again immediately
-				_input.crouch = false;
-			}
-
-			// jump timeout
-			if (_crouchTimeoutDelta >= 0.0f)
-			{
-				_crouchTimeoutDelta -= Time.deltaTime;
-			}
-
-			
-			// -- END OF CROUCHING LOGIC --
-
-			// This links the velocity of the player to the animator, so it can play the correct animations. We smooth the transitions with Damping.
-			_animator.SetFloat("VelocityX", relativeVelocity.x / SprintSpeed, Damping, Time.deltaTime);
-			_animator.SetFloat("VelocityZ", relativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
-			_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed, Damping, Time.deltaTime);
-
-			// This links the crouching state to the animator, so it can play the correct animations.
-			_animator.SetBool("IsCrouching", Crouching);
-
-			_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
-
-			if (inputDirection != Vector3.zero && !_isReversing)
-				_previousDir = inputDirection;
-			
 		}
 
 		private void JumpAndGravity()
@@ -438,6 +302,180 @@ namespace StarterAssets
 
 			// when selected, draw a gizmo in the position of, and matching radius of, the grounded collider
 			Gizmos.DrawSphere(new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z), GroundedRadius);
+		}
+
+		private Vector3 GetInputDirection()
+		{
+			Vector3 dir = transform.right * _input.move.x + transform.forward * _input.move.y;
+			return dir.normalized;
+		}
+
+		private bool HandleReversal(Vector3 inputDirection, float directionChangeValue)
+		{
+			if (!_isReversing && directionChangeValue < 0 && _speed > 0.1f && inputDirection != Vector3.zero)
+			{
+				_isReversing = true;
+			}
+
+			if (_isReversing)
+			{
+				float newDirectionChange = Vector3.Dot(_previousDir, inputDirection);
+
+				if (_speed <= 0.05f || inputDirection == Vector3.zero || newDirectionChange >= 0)
+				{
+					_isReversing = false;
+					if (inputDirection != Vector3.zero)
+						_previousDir = inputDirection;
+				}
+				else
+				{
+					float customDecelerationRate = SpeedChangeRate * SharpTurnDeceleration;
+					_speed -= customDecelerationRate * Time.deltaTime;
+					_speed = Mathf.Max(_speed, 0);
+
+					Vector3 velocityDir = new Vector3(_controller.velocity.x, 0f, _controller.velocity.z).normalized;
+					inputDirection = velocityDir;
+
+					_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+
+					Vector3 reversalRelativeVelocity = transform.InverseTransformDirection(_controller.velocity);
+					_animator.SetFloat("VelocityX", reversalRelativeVelocity.x / SprintSpeed, Damping, Time.deltaTime);
+					_animator.SetFloat("VelocityZ", reversalRelativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
+					_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed, Damping, Time.deltaTime);
+
+					return true;
+				}
+			}
+			return false;
+		}
+
+		private void HandleMovement(ref Vector3 inputDirection, float currentHorizontalSpeed)
+		{
+			float targetSpeed = Crouching ? CrouchSpeed : _input.sprint ? SprintSpeed : MoveSpeed;
+			float inputMagnitude = !IsCurrentDeviceMouse ? _input.move.magnitude : 1f;
+
+			if (_input.move == Vector2.zero)
+			{
+				targetSpeed = 0.0f;
+			}
+			else
+			{
+				if (Crouching)
+				{
+					targetSpeed = inputMagnitude * CrouchSpeed;
+				}
+				else if (!IsMovingForward())
+				{
+					targetSpeed = inputMagnitude * StrafeSpeed;
+				}
+				else
+				{
+					if (targetSpeed > (SprintSpeed - _speedOffset))
+					{
+						targetSpeed = inputMagnitude * SprintSpeed;
+					}
+					else
+					{
+						targetSpeed = inputMagnitude * MoveSpeed;
+					}
+				}
+			}
+
+			if (currentHorizontalSpeed < targetSpeed - _speedOffset || currentHorizontalSpeed > targetSpeed + _speedOffset)
+			{
+				_speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude, Time.deltaTime * SpeedChangeRate);
+				_speed = Mathf.Round(_speed * 1000f) / 1000f;
+			}
+			else
+			{
+				_speed = targetSpeed;
+			}
+
+			// Custom deceleration when no input and not reversing
+			if (_input.move == Vector2.zero && currentHorizontalSpeed > 0 && !_isReversing)
+			{
+				float decelerationRate = SpeedChangeRate / 100.0f;
+				_speed -= decelerationRate * Time.deltaTime;
+				_speed = Mathf.Max(_speed, 0);
+				inputDirection = new Vector3(_controller.velocity.x, 0f, _controller.velocity.z).normalized;
+			}
+		}
+
+		private void HandleCrouching(float currentHorizontalSpeed)
+		{
+			if (_input.crouch && !_input.jump && _crouchTimeoutDelta <= 0.0f)
+			{
+				_crouchTimeoutDelta = CrouchTimeout;
+				Debug.Log("Crouch button pressed");
+				if (!Crouching)
+				{
+					Crouching = true;
+					_controller.height = _crouchedHeight;
+					_controller.center = new Vector3(_controller.center.x, _crouchedYCenter, _controller.center.z);
+					if (currentHorizontalSpeed > CrouchSpeed + _speedOffset)
+					{
+						_isSliding = true;
+						_slidingTimer = SlidingDuration;
+						_slideSpeed = currentHorizontalSpeed; // initialize slide speed
+					}
+				}
+				else
+				{
+					Crouching = false;
+					_controller.height = _standingHeight;
+					_controller.center = new Vector3(_controller.center.x, _standingYCenter, _controller.center.z);
+				}
+				_input.crouch = false;
+			}
+
+			if (_crouchTimeoutDelta >= 0.0f)
+			{
+				_crouchTimeoutDelta -= Time.deltaTime;
+			}
+		}
+
+		private bool HandleSliding()
+		{
+			if (_isSliding)
+			{
+				_slidingTimer -= Time.deltaTime;
+
+				// gradually reduce slide speed to simulate friction
+				_slideSpeed = Mathf.MoveTowards(_slideSpeed, 0f, SlideFriction * Time.deltaTime);
+
+				Vector3 slideDirection = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).normalized;
+
+				// move in the sliding direction at current slide speed
+				_controller.Move(slideDirection * (_slideSpeed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+
+				// update animator here
+				Vector3 slideRelativeVelocity = transform.InverseTransformDirection(_controller.velocity);
+				_animator.SetFloat("VelocityX", slideRelativeVelocity.x / SprintSpeed, Damping, Time.deltaTime);
+				_animator.SetFloat("VelocityZ", slideRelativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
+				_animator.SetFloat("JumpHorizontalVelocity", _slideSpeed / SprintSpeed, Damping, Time.deltaTime);
+
+				if (_slidingTimer <= 0f || _slideSpeed <= 0.1f)
+				{
+					_isSliding = false;
+				}
+				return true; // sliding handled, skip rest of Move()
+			}
+			return false; // not sliding, continue with Move()
+		}
+
+		private void UpdateAnimatorAndMove(Vector3 inputDirection)
+		{
+			Vector3 relativeVelocity = transform.InverseTransformDirection(_controller.velocity);
+
+			_animator.SetFloat("VelocityX", relativeVelocity.x / SprintSpeed, Damping, Time.deltaTime);
+			_animator.SetFloat("VelocityZ", relativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
+			_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed, Damping, Time.deltaTime);
+			_animator.SetBool("IsCrouching", Crouching);
+
+			_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+
+			if (inputDirection != Vector3.zero && !_isReversing)
+				_previousDir = inputDirection;
 		}
 	}
 }
