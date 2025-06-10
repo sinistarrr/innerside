@@ -89,6 +89,7 @@ namespace StarterAssets
 
 		private bool _isReversing = false;
 		private bool _isSliding = false;
+		private bool _didJump = false;
 		private float _standingHeight;
 		private float _standingYCenter;
 		private float _crouchedHeight;
@@ -233,6 +234,7 @@ namespace StarterAssets
 		{
 			if (Grounded)
 			{
+				_didJump = false;
 				// reset the fall timeout timer
 				_fallTimeoutDelta = FallTimeout;
 
@@ -247,6 +249,7 @@ namespace StarterAssets
 				{
 					// the square root of H * -2 * G = how much velocity needed to reach desired height
 					_verticalVelocity = Mathf.Sqrt(JumpHeight * -2f * Gravity);
+					_didJump = true;
 				}
 
 				// jump timeout
@@ -471,6 +474,7 @@ namespace StarterAssets
 			_animator.SetFloat("VelocityZ", relativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
 			_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed, Damping, Time.deltaTime);
 			_animator.SetBool("IsCrouching", Crouching);
+			_animator.SetBool("DidJump", _didJump);
 
 			_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
