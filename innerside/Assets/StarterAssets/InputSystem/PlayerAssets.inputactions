@@ -1,5 +1,5 @@
 {
-    "name": "StarterAssets",
+    "name": "PlayerAssets",
     "maps": [
         {
             "name": "Player",
@@ -48,7 +48,7 @@
                     "expectedControlType": "",
                     "processors": "",
                     "interactions": "",
-                    "initialStateCheck": false
+                    "initialStateCheck": true
                 }
             ],
             "bindings": [
