@@ -1,4 +1,5 @@
 ﻿using System;
+using NUnit.Framework;
 using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
@@ -72,6 +73,12 @@ public class FirstPersonController : MonoBehaviour
 	public float SlidingDuration = 1.0f;
 	[Tooltip("Tweak this value for more/less friction when sliding")]
 	public float SlideFriction = 4.0f;
+	// [Tooltip("Duration of the hard landing roll in seconds")]
+	// public float RollDuration = 1.0f;
+	[Tooltip("Multiplier for roll speed relative to sprint speed")]
+	public float RollSpeedMultiplier = 1.2f;
+
+
 
 	[Header("Cinemachine")]
 	[Tooltip("The follow target set in the Cinemachine Virtual Camera that the camera will follow")]
@@ -90,17 +97,20 @@ public class FirstPersonController : MonoBehaviour
 	private float _verticalVelocity;
 	private float _terminalVelocity = 53.0f;
 	private float _slideSpeed = 0f;
+	private float _rollSpeed = 0f;
+	private float _rollTimer = 0f;
 	private Vector3 _previousDir = Vector3.zero;
 
 	// timeout deltatime
 	private float _jumpTimeoutDelta;
 	private float _fallTimeoutDelta;
-	private float _crouchTimeoutDelta;
+	// private float _crouchTimeoutDelta;
 	private float _slidingTimer = 0f;
 
 	private bool _isReversing = false;
 	private bool _isSliding = false;
-	private bool _didJump = false;
+	private bool _isRolling = false;
+	// private bool _didJump = false;
 	private float _standingHeight;
 	private float _standingYCenter;
 	private float _crouchedHeight;
@@ -162,7 +172,7 @@ public class FirstPersonController : MonoBehaviour
 		// reset our timeouts on start
 		_jumpTimeoutDelta = JumpTimeout;
 		_fallTimeoutDelta = FallTimeout;
-		_crouchTimeoutDelta = CrouchTimeout;
+		// _crouchTimeoutDelta = CrouchTimeout;
 
 		// set the standing and crouched height and center in variables once to avoid potential calculations
 		_standingHeight = _controller.height;
@@ -192,6 +202,24 @@ public class FirstPersonController : MonoBehaviour
 		_animator.SetBool("IsGrounded", Grounded);
 	}
 
+	private bool IsInState(string stateName)
+	{
+		if (_animator == null) return false;
+		int layer = 0;
+
+		// Check if in transition and next state is roll
+		if (_animator.IsInTransition(layer))
+		{
+			AnimatorStateInfo nextState = _animator.GetNextAnimatorStateInfo(layer);
+			if (nextState.IsTag(stateName)) // Use your tag here
+				return true;
+		}
+
+		// Check if current state is roll
+		AnimatorStateInfo currentState = _animator.GetCurrentAnimatorStateInfo(layer);
+		return currentState.IsTag(stateName);
+	}
+
 	private void HandleHardLanding()
 	{
 		// hard fall detection logic
@@ -212,6 +240,15 @@ public class FirstPersonController : MonoBehaviour
 					_animator.SetTrigger("HardLand");
 					Debug.Log("Hard landing detected with speed: " + _maxFallSpeed);
 					// add play a sound or particle effect here or stuff like that
+
+					// Hard landing roll logic
+					_isRolling = true;
+					_isSliding = false;
+					if (_animator != null)
+					{
+						_animator.SetBool("IsSliding", false); // reset sliding animation
+					}
+					_rollSpeed = StrafeSpeed * RollSpeedMultiplier;
 				}
 				else
 				{
@@ -252,6 +289,39 @@ public class FirstPersonController : MonoBehaviour
 	private void Move()
 	{
 
+		if (_isRolling && !IsInState("Roll"))
+		{
+			_isRolling = false;
+		}
+		// Handle hard landing roll movement
+		if (_isRolling)
+		{
+			// Move forward at constant roll speed
+			Vector3 rollDirection = transform.forward;
+			_controller.Move(rollDirection * (_rollSpeed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+
+			// Update animator parameters for rolling
+			_animator.SetFloat("VelocityX", 0f, Damping, Time.deltaTime);
+			_animator.SetFloat("VelocityZ", _rollSpeed / SprintSpeed, Damping, Time.deltaTime);
+			_animator.SetFloat("JumpHorizontalVelocity", _rollSpeed / SprintSpeed, Damping, Time.deltaTime);
+
+			return;
+		}
+
+		// Handle hard landing (not rolling)
+		if (IsInState("HardLanding"))
+		{
+			_speed = 0f;
+
+			// Update animator parameters to zero so animation blends correctly
+			_animator.SetFloat("VelocityX", 0f, Damping, Time.deltaTime);
+			_animator.SetFloat("VelocityZ", 0f, Damping, Time.deltaTime);
+			_animator.SetFloat("JumpHorizontalVelocity", 0f, Damping, Time.deltaTime);
+
+			_controller.Move(new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+			return;
+		}
+
 		// calculate input and direction
 		Vector3 inputDirection = GetInputDirection();
 		float directionChangeValue = Vector3.Dot(_previousDir, inputDirection);
@@ -290,6 +360,8 @@ public class FirstPersonController : MonoBehaviour
 		// handle crouching
 		HandleCrouching(currentHorizontalSpeed);
 
+
+
 		// update animator and move character
 		UpdateAnimatorAndMove(inputDirection);
 
@@ -297,9 +369,15 @@ public class FirstPersonController : MonoBehaviour
 
 	private void JumpAndGravity()
 	{
+		// Prevent jumping during hard landing animation
+		if (IsInState("HardLanding") || _isSliding || Crouching)
+		{
+			return;
+		}
+
 		if (Grounded)
 		{
-			_didJump = false;
+			// _didJump = false;
 			// reset the fall timeout timer
 			_fallTimeoutDelta = FallTimeout;
 
@@ -314,7 +392,8 @@ public class FirstPersonController : MonoBehaviour
 			{
 				// the square root of H * -2 * G = how much velocity needed to reach desired height
 				_verticalVelocity = Mathf.Sqrt(JumpHeight * -2f * Gravity);
-				_didJump = true;
+				// _didJump = true;
+				_animator.SetTrigger("DidJump");
 			}
 
 			// jump timeout
@@ -485,15 +564,22 @@ public class FirstPersonController : MonoBehaviour
 
 	private void HandleCrouching(float currentHorizontalSpeed)
 	{
-		// Custom logic for jump + crouch combo (implement later)
-		if (_input.crouch && _input.jump)
-		{
-			// TODO: Add custom behavior for jumping while crouching
+		// // Custom logic for jump + crouch combo (implement later)
+		// if (_input.crouch && _input.jump)
+		// {
+		// 	// TODO: Add custom behavior for jumping while crouching
+		// 	return;
+		// }
+
+		// Prevent crouching logic if not grounded
+		if (!Grounded)
 			return;
-		}
+
+		// Only trigger sliding if crouch is pressed, not already sliding, moving fast enough, and pressing forward
+		bool pressingForward = _input.move.y > 0.5f; // Adjust threshold as needed
 
 		// sliding detection : start sliding if crouch is pressed, not already sliding, and moving fast enough.
-		if (_input.crouch && !_isSliding && currentHorizontalSpeed > CrouchSpeed + _speedOffset)
+		if (_input.crouch && !_isSliding && !_isRolling && currentHorizontalSpeed > (CrouchSpeed + 1.0f + _speedOffset) && pressingForward)
 		{
 			_isSliding = true;
 			_slidingTimer = SlidingDuration;
@@ -518,11 +604,13 @@ public class FirstPersonController : MonoBehaviour
 
 	private bool HandleSliding()
 	{
+		if (_isRolling)
+			return false; // Don't slide while rolling
+
 		if (_isSliding)
 		{
 			_slidingTimer -= Time.deltaTime;
 
-			// --- UPDATE CROUCHING STATE DURING SLIDE ---
 			// This keeps Crouching in sync with the crouch key even while sliding
 			if (_input.crouch && !Crouching)
 			{
@@ -535,7 +623,7 @@ public class FirstPersonController : MonoBehaviour
 
 			// --- Update animator crouch state here ---
 			_animator.SetBool("IsCrouching", Crouching);
-			
+
 			// gradually reduce slide speed to simulate friction
 			_slideSpeed = Mathf.MoveTowards(_slideSpeed, 0f, SlideFriction * Time.deltaTime);
 
@@ -553,6 +641,7 @@ public class FirstPersonController : MonoBehaviour
 			if (_slidingTimer <= 0f || _slideSpeed <= 0.1f)
 			{
 				_isSliding = false;
+				_animator.SetBool("IsSliding", _isSliding);
 			}
 			return true; // sliding handled, skip rest of Move()
 		}
@@ -567,7 +656,8 @@ public class FirstPersonController : MonoBehaviour
 		_animator.SetFloat("VelocityZ", relativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
 		_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed, Damping, Time.deltaTime);
 		_animator.SetBool("IsCrouching", Crouching);
-		_animator.SetBool("DidJump", _didJump);
+		_animator.SetBool("IsSliding", _isSliding);
+		// _animator.SetBool("DidJump", _didJump);
 
 		_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
