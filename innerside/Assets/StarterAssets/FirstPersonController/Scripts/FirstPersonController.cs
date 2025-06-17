@@ -100,6 +100,7 @@ public class FirstPersonController : MonoBehaviour
 	private float _rollSpeed = 0f;
 	private float _rollTimer = 0f;
 	private Vector3 _previousDir = Vector3.zero;
+	private Vector3 _rollDirection = Vector3.zero;
 
 	// timeout deltatime
 	private float _jumpTimeoutDelta;
@@ -110,6 +111,7 @@ public class FirstPersonController : MonoBehaviour
 	private bool _isReversing = false;
 	private bool _isSliding = false;
 	private bool _isRolling = false;
+	private bool _isRunJump = false;
 	// private bool _didJump = false;
 	private float _standingHeight;
 	private float _standingYCenter;
@@ -249,6 +251,7 @@ public class FirstPersonController : MonoBehaviour
 						_animator.SetBool("IsSliding", false); // reset sliding animation
 					}
 					_rollSpeed = StrafeSpeed * RollSpeedMultiplier;
+					_rollDirection = transform.forward; // <-- Lock roll direction here
 				}
 				else
 				{
@@ -289,80 +292,20 @@ public class FirstPersonController : MonoBehaviour
 	private void Move()
 	{
 
-		if (_isRolling && !IsInState("Roll"))
-		{
-			_isRolling = false;
-		}
-		// Handle hard landing roll movement
-		if (_isRolling)
-		{
-			// Move forward at constant roll speed
-			Vector3 rollDirection = transform.forward;
-			_controller.Move(rollDirection * (_rollSpeed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+		if (HandleRollingMovement()) return;
+		if (HandleHardLandingMovement()) return;
+		if (HandleSliding()) return;
 
-			// Update animator parameters for rolling
-			_animator.SetFloat("VelocityX", 0f, Damping, Time.deltaTime);
-			_animator.SetFloat("VelocityZ", _rollSpeed / SprintSpeed, Damping, Time.deltaTime);
-			_animator.SetFloat("JumpHorizontalVelocity", _rollSpeed / SprintSpeed, Damping, Time.deltaTime);
-
-			return;
-		}
-
-		// Handle hard landing (not rolling)
-		if (IsInState("HardLanding"))
-		{
-			_speed = 0f;
-
-			// Update animator parameters to zero so animation blends correctly
-			_animator.SetFloat("VelocityX", 0f, Damping, Time.deltaTime);
-			_animator.SetFloat("VelocityZ", 0f, Damping, Time.deltaTime);
-			_animator.SetFloat("JumpHorizontalVelocity", 0f, Damping, Time.deltaTime);
-
-			_controller.Move(new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
-			return;
-		}
-
-		// calculate input and direction
 		Vector3 inputDirection = GetInputDirection();
 		float directionChangeValue = Vector3.Dot(_previousDir, inputDirection);
 		float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
 
-		// --- sliding logic ---
-		if (HandleSliding())
-			return;
+		if (HandleReversal(inputDirection, directionChangeValue)) return;
 
-		// handle reversal (early return if reversing)
-		if (HandleReversal(inputDirection, directionChangeValue))
-			return;
-
-		// --- air control lock ---
-		if (!Grounded && _wasGroundedLastFrame)
-		{
-			// Just left the ground: lock direction and speed
-			_lockedAirDirection = inputDirection != Vector3.zero ? inputDirection : _previousDir;
-			_lockedAirSpeed = _speed;
-		}
-
-		// handle movement (acceleration/deceleration)
+		HandleAirLock(inputDirection);
 		HandleMovement(ref inputDirection, currentHorizontalSpeed);
-
-		// --- landing speed ---
-		// Detect landing (was in air last frame, now grounded)
-		if (Grounded && !_wasGroundedLastFrame)
-		{
-			// If input is in the opposite direction of locked air direction, reset speed to zero
-			if (Vector3.Dot(_lockedAirDirection, inputDirection) < 0f)
-			{
-				_speed = 0f;
-			}
-		}
-
-		// handle crouching
+		HandleLanding(inputDirection);
 		HandleCrouching(currentHorizontalSpeed);
-
-
-
-		// update animator and move character
 		UpdateAnimatorAndMove(inputDirection);
 
 	}
@@ -392,7 +335,7 @@ public class FirstPersonController : MonoBehaviour
 			{
 				// the square root of H * -2 * G = how much velocity needed to reach desired height
 				_verticalVelocity = Mathf.Sqrt(JumpHeight * -2f * Gravity);
-				// _didJump = true;
+				_isRunJump = (_speed / SprintSpeed) >= 0.1f; // true if running, false if idle
 				_animator.SetTrigger("DidJump");
 			}
 
@@ -457,6 +400,61 @@ public class FirstPersonController : MonoBehaviour
 		return dir.normalized;
 	}
 
+	private bool HandleRollingMovement()
+	{
+		if (_isRolling && !IsInState("Roll"))
+		{
+			_isRolling = false;
+		}
+		if (_isRolling)
+		{
+			_controller.Move(_rollDirection * (_rollSpeed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+			UpdateAnimator(0f, 0f, 0f);
+			return true;
+		}
+		return false;
+	}
+
+	private bool HandleHardLandingMovement()
+	{
+		if (IsInState("HardLanding"))
+		{
+			_speed = 0f;
+			UpdateAnimator(0f, _rollSpeed / SprintSpeed, _rollSpeed / SprintSpeed);
+			_controller.Move(new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+			return true;
+		}
+		return false;
+	}
+
+	private void HandleAirLock(Vector3 inputDirection)
+	{
+		if (!Grounded && _wasGroundedLastFrame)
+		{
+			_lockedAirDirection = inputDirection != Vector3.zero ? inputDirection : _previousDir;
+			_lockedAirSpeed = _speed;
+		}
+	}
+
+	private void HandleLanding(Vector3 inputDirection)
+	{
+		if (Grounded && !_wasGroundedLastFrame)
+		{
+			_isRunJump = false;
+			if (Vector3.Dot(_lockedAirDirection, inputDirection) < 0f)
+			{
+				_speed = 0f;
+			}
+		}
+	}
+
+	private void UpdateAnimator(float velocityX, float velocityZ, float jumpHorizontalVelocity)
+	{
+		_animator.SetFloat("VelocityX", velocityX, Damping, Time.deltaTime);
+		_animator.SetFloat("VelocityZ", velocityZ, Damping, Time.deltaTime);
+		_animator.SetFloat("JumpHorizontalVelocity", jumpHorizontalVelocity, Damping, Time.deltaTime);
+	}
+
 	private bool HandleReversal(Vector3 inputDirection, float directionChangeValue)
 	{
 		// Prevent reversal logic in air
@@ -490,9 +488,7 @@ public class FirstPersonController : MonoBehaviour
 				_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
 				Vector3 reversalRelativeVelocity = transform.InverseTransformDirection(_controller.velocity);
-				_animator.SetFloat("VelocityX", reversalRelativeVelocity.x / SprintSpeed, Damping, Time.deltaTime);
-				_animator.SetFloat("VelocityZ", reversalRelativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
-				_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed, Damping, Time.deltaTime);
+				UpdateAnimator(reversalRelativeVelocity.x / SprintSpeed, reversalRelativeVelocity.z / SprintSpeed, _speed / SprintSpeed);
 
 				return true;
 			}
@@ -505,7 +501,7 @@ public class FirstPersonController : MonoBehaviour
 		float targetSpeed = Crouching ? CrouchSpeed : _input.sprint ? SprintSpeed : MoveSpeed;
 		float inputMagnitude = !IsCurrentDeviceMouse ? _input.move.magnitude : 1f;
 
-		if (Grounded)
+		if (Grounded || !_isRunJump)
 		{
 			if (_input.move == Vector2.zero)
 			{
@@ -532,6 +528,10 @@ public class FirstPersonController : MonoBehaviour
 						targetSpeed = inputMagnitude * MoveSpeed;
 					}
 				}
+			}
+			if (!Grounded)
+			{
+				targetSpeed *= 0.75f; // Halve speed in air
 			}
 
 			if (currentHorizontalSpeed < targetSpeed - _speedOffset || currentHorizontalSpeed > targetSpeed + _speedOffset)
@@ -634,14 +634,19 @@ public class FirstPersonController : MonoBehaviour
 
 			// update animator here
 			Vector3 slideRelativeVelocity = transform.InverseTransformDirection(_controller.velocity);
-			_animator.SetFloat("VelocityX", slideRelativeVelocity.x / SprintSpeed, Damping, Time.deltaTime);
-			_animator.SetFloat("VelocityZ", slideRelativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
-			_animator.SetFloat("JumpHorizontalVelocity", _slideSpeed / SprintSpeed, Damping, Time.deltaTime);
+			UpdateAnimator(slideRelativeVelocity.x / SprintSpeed, slideRelativeVelocity.z / SprintSpeed, _slideSpeed / SprintSpeed);
 
 			if (_slidingTimer <= 0f || _slideSpeed <= 0.1f)
 			{
 				_isSliding = false;
 				_animator.SetBool("IsSliding", _isSliding);
+
+				// careful : Stand up if not crouching when slide ends
+				if (!Crouching)
+				{
+					_controller.height = _standingHeight;
+					_controller.center = new Vector3(_controller.center.x, _standingYCenter, _controller.center.z);
+				}
 			}
 			return true; // sliding handled, skip rest of Move()
 		}
@@ -652,9 +657,7 @@ public class FirstPersonController : MonoBehaviour
 	{
 		Vector3 relativeVelocity = transform.InverseTransformDirection(_controller.velocity);
 
-		_animator.SetFloat("VelocityX", relativeVelocity.x / SprintSpeed, Damping, Time.deltaTime);
-		_animator.SetFloat("VelocityZ", relativeVelocity.z / SprintSpeed, Damping, Time.deltaTime);
-		_animator.SetFloat("JumpHorizontalVelocity", _speed / SprintSpeed, Damping, Time.deltaTime);
+		UpdateAnimator(relativeVelocity.x / SprintSpeed, relativeVelocity.z / SprintSpeed, _speed / SprintSpeed);
 		_animator.SetBool("IsCrouching", Crouching);
 		_animator.SetBool("IsSliding", _isSliding);
 		// _animator.SetBool("DidJump", _didJump);
