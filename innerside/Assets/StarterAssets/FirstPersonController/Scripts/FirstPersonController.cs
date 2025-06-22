@@ -78,6 +78,8 @@ public class FirstPersonController : MonoBehaviour
 	[Tooltip("Multiplier for roll speed relative to sprint speed")]
 	public float RollSpeedMultiplier = 1.2f;
 
+	[Header("Other")]
+	public float TransitionSpeed = 10f; // Speed of stance transition
 
 
 	[Header("Cinemachine")]
@@ -87,6 +89,31 @@ public class FirstPersonController : MonoBehaviour
 	public float TopClamp = 90.0f;
 	[Tooltip("How far in degrees can you move the camera down")]
 	public float BottomClamp = -90.0f;
+
+	// Player Stance tracking
+	public enum PlayerStance
+	{
+		Standing,
+		Crouching,
+		CrouchJump
+	}
+
+	// Data structure to hold stance data
+	[Serializable]
+	public struct StanceData
+	{
+		public float Height;
+		public float CenterY;
+	}
+
+	private PlayerStance _currentStance = PlayerStance.Standing;
+
+	// stance data for different player stances
+	public StanceData StandingStance;
+	public StanceData CrouchingStance;
+	public StanceData CrouchJumpStance;
+
+	private StanceData _targetStance;
 
 	// cinemachine
 	private float _cinemachineTargetPitch;
@@ -112,6 +139,8 @@ public class FirstPersonController : MonoBehaviour
 	private bool _isSliding = false;
 	private bool _isRolling = false;
 	private bool _isRunJump = false;
+	private bool _isCrouchJumping = false;
+	private bool _isStanceTransitioning = false;
 	// private bool _didJump = false;
 	private float _standingHeight;
 	private float _standingYCenter;
@@ -142,7 +171,7 @@ public class FirstPersonController : MonoBehaviour
 #if ENABLE_INPUT_SYSTEM
 			return _playerInput.currentControlScheme == "KeyboardMouse";
 #else
-				return false;
+			return false;
 #endif
 		}
 	}
@@ -168,7 +197,7 @@ public class FirstPersonController : MonoBehaviour
 #if ENABLE_INPUT_SYSTEM
 		_playerInput = GetComponent<PlayerInput>();
 #else
-			Debug.LogError( "Player Assets package is missing dependencies. Please use Tools/Starter Assets/Reinstall Dependencies to fix it");
+		Debug.LogError("Player Assets package is missing dependencies. Please use Tools/Starter Assets/Reinstall Dependencies to fix it");
 #endif
 
 		// reset our timeouts on start
@@ -181,6 +210,12 @@ public class FirstPersonController : MonoBehaviour
 		_standingYCenter = _controller.center.y;
 		_crouchedHeight = _controller.height / 2;
 		_crouchedYCenter = _controller.center.y / 2;
+
+		// initialize stance data
+		StandingStance = new StanceData { Height = _standingHeight, CenterY = _standingYCenter };
+		CrouchingStance = new StanceData { Height = _crouchedHeight, CenterY = _crouchedYCenter };
+		CrouchJumpStance = new StanceData { Height = _crouchedHeight, CenterY = _standingYCenter + _crouchedYCenter };
+		_targetStance = StandingStance;
 	}
 
 	private void Update()
@@ -189,6 +224,11 @@ public class FirstPersonController : MonoBehaviour
 		GroundedCheck();
 		Move();
 		HandleHardLanding();
+		HandleStanceTransition();
+		
+		Debug.Log("current stance: " + _currentStance);
+		Debug.Log("crouching: " + Crouching);
+		Debug.Log("input crouch: " + _input.crouch);
 	}
 
 	private void LateUpdate()
@@ -199,9 +239,58 @@ public class FirstPersonController : MonoBehaviour
 	private void GroundedCheck()
 	{
 		// set sphere position, with offset
-		Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z);
+		// Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z);
+
+		float capsuleBottom = transform.position.y + _controller.center.y - (_controller.height / 2f);
+		Vector3 spherePosition = new Vector3(transform.position.x, capsuleBottom - GroundedOffset, transform.position.z);
 		Grounded = Physics.CheckSphere(spherePosition, GroundedRadius, GroundLayers, QueryTriggerInteraction.Ignore);
 		_animator.SetBool("IsGrounded", Grounded);
+	}
+
+	private void SetStance(PlayerStance newStance)
+	{
+
+		if (_currentStance == newStance) return;
+
+		switch (newStance)
+		{
+			case PlayerStance.Standing:
+				_targetStance = StandingStance;
+				break;
+			case PlayerStance.Crouching:
+				_targetStance = CrouchingStance;
+				break;
+			case PlayerStance.CrouchJump:
+				_targetStance = CrouchJumpStance;
+				break;
+		}
+		_currentStance = newStance;
+		_isStanceTransitioning = true; // Start transition
+
+	}
+
+	private void HandleStanceTransition()
+	{
+		// --- Force correct stance in air ---
+		if (!Grounded && Crouching && _currentStance == PlayerStance.Crouching)
+		{
+			SetStance(PlayerStance.CrouchJump);
+		}
+		
+		if (!_isStanceTransitioning) return;
+
+		// Smoothly move height and center towards target stance
+		_controller.height = Mathf.MoveTowards(_controller.height, _targetStance.Height, TransitionSpeed * Time.deltaTime);
+		Vector3 center = _controller.center;
+		center.y = Mathf.MoveTowards(center.y, _targetStance.CenterY, TransitionSpeed * Time.deltaTime);
+		_controller.center = center;
+
+		// Check if transition is complete
+		if (Mathf.Approximately(_controller.height, _targetStance.Height) &&
+			Mathf.Approximately(_controller.center.y, _targetStance.CenterY))
+		{
+			_isStanceTransitioning = false;
+		}
 	}
 
 	private bool IsInState(string stateName)
@@ -289,6 +378,38 @@ public class FirstPersonController : MonoBehaviour
 		}
 	}
 
+	private bool HasHeadroom()
+	{
+		// Calculate where the bottom and top of the standing capsule would be
+		Vector3 crouchedSphere = transform.position + Vector3.up * _controller.radius;
+		Vector3 headroomSphere = crouchedSphere + Vector3.up * (_standingHeight - 2 * _controller.radius);
+
+		// Check if the space is clear for the standing capsule
+		return !Physics.CheckCapsule(
+			crouchedSphere,
+			headroomSphere,
+			_controller.radius - 0.01f,
+			GroundLayers,
+			QueryTriggerInteraction.Ignore
+		);
+	}
+
+	private bool HasGroundClearance()
+	{
+		// Calculate where the bottom and top of the standing capsule would be
+		Vector3 crouchedSphere = transform.position + Vector3.up * _controller.radius;
+		Vector3 groundClearanceSphere = crouchedSphere - Vector3.up * (_standingHeight - 2 * _controller.radius);
+
+		// Check if the space is clear for the standing capsule
+		return !Physics.CheckCapsule(
+			crouchedSphere,
+			groundClearanceSphere,
+			_controller.radius - 0.01f,
+			GroundLayers,
+			QueryTriggerInteraction.Ignore
+		);
+	}
+
 	private void Move()
 	{
 
@@ -313,7 +434,7 @@ public class FirstPersonController : MonoBehaviour
 	private void JumpAndGravity()
 	{
 		// Prevent jumping during hard landing animation
-		if (IsInState("HardLanding") || _isSliding || Crouching)
+		if (IsInState("HardLanding") || _isSliding)
 		{
 			return;
 		}
@@ -331,7 +452,7 @@ public class FirstPersonController : MonoBehaviour
 			}
 
 			// Jump
-			if (_input.jump && _jumpTimeoutDelta <= 0.0f)
+			if (_input.jump && _jumpTimeoutDelta <= 0.0f && !Crouching)
 			{
 				// the square root of H * -2 * G = how much velocity needed to reach desired height
 				_verticalVelocity = Mathf.Sqrt(JumpHeight * -2f * Gravity);
@@ -391,7 +512,14 @@ public class FirstPersonController : MonoBehaviour
 		else Gizmos.color = transparentRed;
 
 		// when selected, draw a gizmo in the position of, and matching radius of, the grounded collider
-		Gizmos.DrawSphere(new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z), GroundedRadius);
+		// Get the CharacterController component (works in edit mode)
+		var controller = GetComponent<CharacterController>();
+		if (controller != null)
+		{
+			float capsuleBottom = transform.position.y + controller.center.y - (controller.height / 2f);
+			Vector3 spherePosition = new Vector3(transform.position.x, capsuleBottom - GroundedOffset, transform.position.z);
+			Gizmos.DrawSphere(spherePosition, GroundedRadius);
+		}
 	}
 
 	private Vector3 GetInputDirection()
@@ -445,7 +573,14 @@ public class FirstPersonController : MonoBehaviour
 			{
 				_speed = 0f;
 			}
+
+			if (Crouching && _currentStance == PlayerStance.CrouchJump)
+			{
+				SetStance(PlayerStance.Crouching);
+			}
 		}
+
+
 	}
 
 	private void UpdateAnimator(float velocityX, float velocityZ, float jumpHorizontalVelocity)
@@ -564,43 +699,95 @@ public class FirstPersonController : MonoBehaviour
 
 	private void HandleCrouching(float currentHorizontalSpeed)
 	{
-		// // Custom logic for jump + crouch combo (implement later)
-		// if (_input.crouch && _input.jump)
-		// {
-		// 	// TODO: Add custom behavior for jumping while crouching
-		// 	return;
-		// }
-
-		// Prevent crouching logic if not grounded
-		if (!Grounded)
+		// Handle crouch input (on ground or in air)
+		if (_input.crouch && !Crouching)
+		{
+			Crouching = true;
+			if (Grounded)
+			{
+				SetStance(PlayerStance.Crouching);
+			}
+			else
+			{
+				_isCrouchJumping = true;
+				SetStance(PlayerStance.CrouchJump);
+			}
 			return;
+		}
+
+		// Handle stand up when crouch key is released and there is headroom
+		if (!_input.crouch && Crouching)
+		{
+			if (_isCrouchJumping)
+			{
+				// Released crouch in air: try to stand, else go to crouch stance
+				Crouching = false;
+				_isCrouchJumping = false;
+				if (HasGroundClearance())
+				{
+					SetStance(PlayerStance.Standing);
+					Debug.Log("miaou miaou - THERE IS enough space to stand up");
+				}
+				else
+				{
+					SetStance(PlayerStance.Crouching);
+					Debug.Log("miaou miaou - not enough space to stand up");
+				}
+				return;
+			}
+			else if (HasHeadroom())
+			{
+				// Released crouch on ground or after landing: stand up
+				Crouching = false;
+				SetStance(PlayerStance.Standing);
+				return;
+			}
+		}
 
 		// Only trigger sliding if crouch is pressed, not already sliding, moving fast enough, and pressing forward
 		bool pressingForward = _input.move.y > 0.5f; // Adjust threshold as needed
 
-		// sliding detection : start sliding if crouch is pressed, not already sliding, and moving fast enough.
-		if (_input.crouch && !_isSliding && !_isRolling && currentHorizontalSpeed > (CrouchSpeed + 1.0f + _speedOffset) && pressingForward)
+		if (Grounded && !_input.jump && _input.crouch && !_isSliding && !_isRolling && currentHorizontalSpeed > (CrouchSpeed + 1.0f + _speedOffset) && pressingForward)
 		{
 			_isSliding = true;
 			_slidingTimer = SlidingDuration;
 			_slideSpeed = currentHorizontalSpeed;
 		}
 
-		// Crouch while holding the crouch button (and not jumping)
-		if (_input.crouch && !Crouching && !_input.jump)
+		// Safety net: if not crouching, not holding crouch, but still in crouch stance, and there is headroom, stand up
+		if (!_input.crouch && !Crouching &&
+			(_currentStance == PlayerStance.Crouching || _currentStance == PlayerStance.CrouchJump) &&
+			HasHeadroom())
 		{
-			Crouching = true;
-			_controller.height = _crouchedHeight;
-			_controller.center = new Vector3(_controller.center.x, _crouchedYCenter, _controller.center.z);
+			SetStance(PlayerStance.Standing);
 		}
-		// Stand up when crouch button is released (and not jumping)
-		else if (!_input.crouch && Crouching)
-		{
-			Crouching = false;
-			_controller.height = _standingHeight;
-			_controller.center = new Vector3(_controller.center.x, _standingYCenter, _controller.center.z);
-		}
+
 	}
+
+	// private void SetCollider(float newHeight, float newCenterY)
+	// {
+	// 	_controller.height = newHeight;
+	// 	_controller.center = new Vector3(_controller.center.x, newCenterY, _controller.center.z);
+	// }
+
+	// // Usage for crouch jump:
+	// private void SetCrouchJumpCollider()
+	// {
+	// 	// Keep the top of the capsule at the same height as standing
+	// 	SetCollider(_crouchedHeight, _standingYCenter + _crouchedYCenter);
+	// }
+
+	// // Usage for normal crouch:
+	// private void SetCrouchCollider()
+	// {
+	// 	SetCollider(_crouchedHeight, _crouchedYCenter);
+	// }
+
+	// // Usage for standing:
+	// private void SetStandingCollider()
+	// {
+	// 	SetCollider(_standingHeight, _standingYCenter);
+	// }
 
 	private bool HandleSliding()
 	{
@@ -660,7 +847,6 @@ public class FirstPersonController : MonoBehaviour
 		UpdateAnimator(relativeVelocity.x / SprintSpeed, relativeVelocity.z / SprintSpeed, _speed / SprintSpeed);
 		_animator.SetBool("IsCrouching", Crouching);
 		_animator.SetBool("IsSliding", _isSliding);
-		// _animator.SetBool("DidJump", _didJump);
 
 		_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
