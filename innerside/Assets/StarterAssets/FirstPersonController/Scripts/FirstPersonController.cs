@@ -139,8 +139,10 @@ public class FirstPersonController : MonoBehaviour
 	private bool _isSliding = false;
 	private bool _isRolling = false;
 	private bool _isRunJump = false;
+	private bool _isIdleJump = false;
 	private bool _isCrouchJumping = false;
 	private bool _isStanceTransitioning = false;
+	private bool _justJumped = false;
 	// private bool _didJump = false;
 	private float _standingHeight;
 	private float _standingYCenter;
@@ -225,10 +227,7 @@ public class FirstPersonController : MonoBehaviour
 		Move();
 		HandleHardLanding();
 		HandleStanceTransition();
-		
-		Debug.Log("current stance: " + _currentStance);
-		Debug.Log("crouching: " + Crouching);
-		Debug.Log("input crouch: " + _input.crouch);
+		ResetJumpFlags();
 	}
 
 	private void LateUpdate()
@@ -272,11 +271,11 @@ public class FirstPersonController : MonoBehaviour
 	private void HandleStanceTransition()
 	{
 		// --- Force correct stance in air ---
-		if (!Grounded && Crouching && _currentStance == PlayerStance.Crouching)
+		if (!Grounded && Crouching && _currentStance == PlayerStance.Crouching && !_isSliding)
 		{
 			SetStance(PlayerStance.CrouchJump);
 		}
-		
+
 		if (!_isStanceTransitioning) return;
 
 		// Smoothly move height and center towards target stance
@@ -378,6 +377,12 @@ public class FirstPersonController : MonoBehaviour
 		}
 	}
 
+	private void ResetJumpFlags()
+	{
+		if (_justJumped)
+			_justJumped = false;
+	}
+
 	private bool HasHeadroom()
 	{
 		// Calculate where the bottom and top of the standing capsule would be
@@ -457,7 +462,9 @@ public class FirstPersonController : MonoBehaviour
 				// the square root of H * -2 * G = how much velocity needed to reach desired height
 				_verticalVelocity = Mathf.Sqrt(JumpHeight * -2f * Gravity);
 				_isRunJump = (_speed / SprintSpeed) >= 0.1f; // true if running, false if idle
+				_isIdleJump = !_isRunJump; // true if idle, false if running
 				_animator.SetTrigger("DidJump");
+				_justJumped = true;
 			}
 
 			// jump timeout
@@ -569,6 +576,7 @@ public class FirstPersonController : MonoBehaviour
 		if (Grounded && !_wasGroundedLastFrame)
 		{
 			_isRunJump = false;
+			_isIdleJump = false;
 			if (Vector3.Dot(_lockedAirDirection, inputDirection) < 0f)
 			{
 				_speed = 0f;
@@ -636,7 +644,7 @@ public class FirstPersonController : MonoBehaviour
 		float targetSpeed = Crouching ? CrouchSpeed : _input.sprint ? SprintSpeed : MoveSpeed;
 		float inputMagnitude = !IsCurrentDeviceMouse ? _input.move.magnitude : 1f;
 
-		if (Grounded || !_isRunJump)
+		if (Grounded || _isIdleJump)
 		{
 			if (_input.move == Vector2.zero)
 			{
@@ -691,7 +699,7 @@ public class FirstPersonController : MonoBehaviour
 		}
 		else
 		{
-			// AIR LOCK: No control in air
+			// AIR LOCK: No control in air for run jump or falling with speed
 			inputDirection = _lockedAirDirection;
 			_speed = _lockedAirSpeed;
 		}
@@ -747,7 +755,7 @@ public class FirstPersonController : MonoBehaviour
 		// Only trigger sliding if crouch is pressed, not already sliding, moving fast enough, and pressing forward
 		bool pressingForward = _input.move.y > 0.5f; // Adjust threshold as needed
 
-		if (Grounded && !_input.jump && _input.crouch && !_isSliding && !_isRolling && currentHorizontalSpeed > (CrouchSpeed + 1.0f + _speedOffset) && pressingForward)
+		if (Grounded && !_input.jump && _input.crouch && !_isSliding && !_isRolling && currentHorizontalSpeed > (CrouchSpeed + 1.0f + _speedOffset) && pressingForward && !_justJumped)
 		{
 			_isSliding = true;
 			_slidingTimer = SlidingDuration;
@@ -763,31 +771,6 @@ public class FirstPersonController : MonoBehaviour
 		}
 
 	}
-
-	// private void SetCollider(float newHeight, float newCenterY)
-	// {
-	// 	_controller.height = newHeight;
-	// 	_controller.center = new Vector3(_controller.center.x, newCenterY, _controller.center.z);
-	// }
-
-	// // Usage for crouch jump:
-	// private void SetCrouchJumpCollider()
-	// {
-	// 	// Keep the top of the capsule at the same height as standing
-	// 	SetCollider(_crouchedHeight, _standingYCenter + _crouchedYCenter);
-	// }
-
-	// // Usage for normal crouch:
-	// private void SetCrouchCollider()
-	// {
-	// 	SetCollider(_crouchedHeight, _crouchedYCenter);
-	// }
-
-	// // Usage for standing:
-	// private void SetStandingCollider()
-	// {
-	// 	SetCollider(_standingHeight, _standingYCenter);
-	// }
 
 	private bool HandleSliding()
 	{
@@ -816,6 +799,14 @@ public class FirstPersonController : MonoBehaviour
 
 			Vector3 slideDirection = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).normalized;
 
+			// Apply gravity if not grounded
+			if (!Grounded)
+			{
+				if (_verticalVelocity < _terminalVelocity)
+				{
+					_verticalVelocity += Gravity * Time.deltaTime;
+				}
+			}
 			// move in the sliding direction at current slide speed
 			_controller.Move(slideDirection * (_slideSpeed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
