@@ -278,11 +278,23 @@ public class FirstPersonController : MonoBehaviour
 
 		if (!_isStanceTransitioning) return;
 
+		// --- Preserve foot position during transition ---
+		float oldHeight = _controller.height;
+		float oldCenterY = _controller.center.y;
+		Vector3 footPosBefore = transform.position + Vector3.up * (oldCenterY - oldHeight / 2f);
+
 		// Smoothly move height and center towards target stance
 		_controller.height = Mathf.MoveTowards(_controller.height, _targetStance.Height, TransitionSpeed * Time.deltaTime);
 		Vector3 center = _controller.center;
 		center.y = Mathf.MoveTowards(center.y, _targetStance.CenterY, TransitionSpeed * Time.deltaTime);
 		_controller.center = center;
+
+		// Calculate new foot position and offset transform to keep feet in place
+		float newHeight = _controller.height;
+		float newCenterY = _controller.center.y;
+		Vector3 footPosAfter = transform.position + Vector3.up * (newCenterY - newHeight / 2f);
+		Vector3 footOffset = footPosBefore - footPosAfter;
+		transform.position += footOffset;
 
 		// Check if transition is complete
 		if (Mathf.Approximately(_controller.height, _targetStance.Height) &&
@@ -457,7 +469,7 @@ public class FirstPersonController : MonoBehaviour
 			}
 
 			// Jump
-			if (_input.jump && _jumpTimeoutDelta <= 0.0f && !Crouching)
+			if (_input.jump && _jumpTimeoutDelta <= 0.0f && !Crouching && !_isSliding)
 			{
 				// the square root of H * -2 * G = how much velocity needed to reach desired height
 				_verticalVelocity = Mathf.Sqrt(JumpHeight * -2f * Gravity);
