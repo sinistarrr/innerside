@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using NUnit.Framework;
 using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
@@ -11,6 +12,10 @@ using UnityEngine.InputSystem;
 #endif
 public class FirstPersonController : MonoBehaviour
 {
+	[Header("Camera Smoothing")]
+	[Tooltip("How quickly the body follows the camera yaw. Higher = snappier, Lower = smoother.")]
+	public float BodyYawLerpSpeed = 10f;
+
 	[Header("Player")]
 	[Tooltip("Move speed of the character in m/s")]
 	public float MoveSpeed = 6.0f;
@@ -126,13 +131,19 @@ public class FirstPersonController : MonoBehaviour
 	private float _slideSpeed = 0f;
 	private float _rollSpeed = 0f;
 	private float _rollTimer = 0f;
+	private float _yawOffset = 0f;
+	private float _lockedYawOffset = 0f;
+	private float _cameraYaw = 0f;
+	private float _pendingTurnAngle = 0f;
+	private float _lastTurnT = 0f;
+	private string _pendingTurnState = "";
 	private Vector3 _previousDir = Vector3.zero;
 	private Vector3 _rollDirection = Vector3.zero;
+
 
 	// timeout deltatime
 	private float _jumpTimeoutDelta;
 	private float _fallTimeoutDelta;
-	// private float _crouchTimeoutDelta;
 	private float _slidingTimer = 0f;
 
 	private bool _isReversing = false;
@@ -143,7 +154,7 @@ public class FirstPersonController : MonoBehaviour
 	private bool _isCrouchJumping = false;
 	private bool _isStanceTransitioning = false;
 	private bool _justJumped = false;
-	// private bool _didJump = false;
+	private bool _isTurningInPlace = false;
 	private float _standingHeight;
 	private float _standingYCenter;
 	private float _crouchedHeight;
@@ -152,6 +163,14 @@ public class FirstPersonController : MonoBehaviour
 	private bool _wasGroundedLastFrame = true;
 	private Vector3 _lockedAirDirection = Vector3.zero;
 	private float _lockedAirSpeed = 0f;
+
+	// turning
+	private bool _isSmoothingTurn = false;
+	private float _smoothTurnElapsed = 0f;
+	private float _smoothTurnDuration = 0.5f; // Adjust for desired speed
+	private Quaternion _turnStartRotation;
+	private Quaternion _turnTargetRotation;
+	private float _turnAngleToApply = 0f;
 
 
 #if ENABLE_INPUT_SYSTEM
@@ -165,6 +184,7 @@ public class FirstPersonController : MonoBehaviour
 
 	private const float _threshold = 0.01f;
 	private const float _speedOffset = 0.1f;
+	private const float MaxYawOffset = 90f;
 
 	private bool IsCurrentDeviceMouse
 	{
@@ -228,6 +248,7 @@ public class FirstPersonController : MonoBehaviour
 		HandleHardLanding();
 		HandleStanceTransition();
 		ResetJumpFlags();
+
 	}
 
 	private void LateUpdate()
@@ -369,24 +390,25 @@ public class FirstPersonController : MonoBehaviour
 
 	private void CameraRotation()
 	{
-		// if there is an input
+		float deltaTimeMultiplier = IsCurrentDeviceMouse ? 1.0f : Time.deltaTime;
+
+		// Body rotates instantly by input
 		if (_input.look.sqrMagnitude >= _threshold)
 		{
-			//Don't multiply mouse input by Time.deltaTime
-			float deltaTimeMultiplier = IsCurrentDeviceMouse ? 1.0f : Time.deltaTime;
-
+			// Vertical (pitch)
 			_cinemachineTargetPitch += _input.look.y * RotationSpeed * deltaTimeMultiplier;
-			_rotationVelocity = _input.look.x * RotationSpeed * deltaTimeMultiplier;
-
-			// clamp our pitch rotation
 			_cinemachineTargetPitch = ClampAngle(_cinemachineTargetPitch, BottomClamp, TopClamp);
 
-			// Update Cinemachine camera target pitch
-			CinemachineCameraTarget.transform.localRotation = Quaternion.Euler(_cinemachineTargetPitch, 0.0f, 0.0f);
-
-			// rotate the player left and right
-			transform.Rotate(Vector3.up * _rotationVelocity);
+			// Horizontal (yaw): rotate body instantly
+			float bodyYaw = transform.eulerAngles.y + _input.look.x * RotationSpeed * deltaTimeMultiplier;
+			transform.eulerAngles = new Vector3(0f, bodyYaw, 0f);
 		}
+
+		// Camera yaw lerps toward body yaw
+		_cameraYaw = Mathf.LerpAngle(_cameraYaw, transform.eulerAngles.y, Time.deltaTime * BodyYawLerpSpeed);
+
+		// Apply pitch to camera target (local X), yaw to camera target (local Y)
+		CinemachineCameraTarget.transform.localRotation = Quaternion.Euler(_cinemachineTargetPitch, _cameraYaw - transform.eulerAngles.y, 0f);
 	}
 
 	private void ResetJumpFlags()
@@ -444,7 +466,7 @@ public class FirstPersonController : MonoBehaviour
 		HandleMovement(ref inputDirection, currentHorizontalSpeed);
 		HandleLanding(inputDirection);
 		HandleCrouching(currentHorizontalSpeed);
-		UpdateAnimatorAndMove(inputDirection);
+		UpdateAnimatorAndMove(inputDirection, currentHorizontalSpeed);
 
 	}
 
@@ -843,13 +865,20 @@ public class FirstPersonController : MonoBehaviour
 		return false; // not sliding, continue with Move()
 	}
 
-	private void UpdateAnimatorAndMove(Vector3 inputDirection)
+	private void UpdateAnimatorAndMove(Vector3 inputDirection, float currentHorizontalSpeed)
 	{
 		Vector3 relativeVelocity = transform.InverseTransformDirection(_controller.velocity);
 
 		UpdateAnimator(relativeVelocity.x / SprintSpeed, relativeVelocity.z / SprintSpeed, _speed / SprintSpeed);
 		_animator.SetBool("IsCrouching", Crouching);
 		_animator.SetBool("IsSliding", _isSliding);
+
+		bool isIdle = _input.move == Vector2.zero && Grounded && currentHorizontalSpeed < 0.05f;
+		_animator.SetBool("IsIdle", isIdle);
+
+		// Set upper body layer weight: 1 when idle, 0 otherwise
+		int upperBodyLayerIndex = 1; // Change if your upper body layer is at a different index
+		_animator.SetLayerWeight(upperBodyLayerIndex, isIdle ? 1f : 0f);
 
 		_controller.Move(inputDirection * (_speed * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
