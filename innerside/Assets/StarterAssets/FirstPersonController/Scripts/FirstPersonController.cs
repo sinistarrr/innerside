@@ -15,6 +15,8 @@ public class FirstPersonController : MonoBehaviour
 	[Header("Camera Smoothing")]
 	[Tooltip("How quickly the body follows the camera yaw. Higher = snappier, Lower = smoother.")]
 	public float BodyYawLerpSpeed = 10f;
+	[Tooltip("How quickly the camera follows the body yaw. Higher = snappier, Lower = smoother.")]
+	public float MaxYawOffset = 90f; // Clamp in inspector
 
 	[Header("Player")]
 	[Tooltip("Move speed of the character in m/s")]
@@ -137,6 +139,11 @@ public class FirstPersonController : MonoBehaviour
 	private float _pendingTurnAngle = 0f;
 	private float _lastTurnT = 0f;
 	private string _pendingTurnState = "";
+	private float _cameraYawOffset = 0f; // Yaw offset for orbiting when idle
+	public Transform CameraPivot; // Assign in inspector
+	private bool _isTurningInPlace = false;
+	private float _pendingYawOffset = 0f;
+
 	private Vector3 _previousDir = Vector3.zero;
 	private Vector3 _rollDirection = Vector3.zero;
 
@@ -154,7 +161,6 @@ public class FirstPersonController : MonoBehaviour
 	private bool _isCrouchJumping = false;
 	private bool _isStanceTransitioning = false;
 	private bool _justJumped = false;
-	private bool _isTurningInPlace = false;
 	private float _standingHeight;
 	private float _standingYCenter;
 	private float _crouchedHeight;
@@ -165,6 +171,8 @@ public class FirstPersonController : MonoBehaviour
 	private float _lockedAirSpeed = 0f;
 
 	// turning
+	private float _smoothedMouseX = 0f;
+	private bool _forceControllerTurn = false;
 	private bool _isSmoothingTurn = false;
 	private float _smoothTurnElapsed = 0f;
 	private float _smoothTurnDuration = 0.5f; // Adjust for desired speed
@@ -184,7 +192,6 @@ public class FirstPersonController : MonoBehaviour
 
 	private const float _threshold = 0.01f;
 	private const float _speedOffset = 0.1f;
-	private const float MaxYawOffset = 90f;
 
 	private bool IsCurrentDeviceMouse
 	{
@@ -248,11 +255,32 @@ public class FirstPersonController : MonoBehaviour
 		HandleHardLanding();
 		HandleStanceTransition();
 		ResetJumpFlags();
-
 	}
 
 	private void LateUpdate()
 	{
+		Debug.Log("Camera Yaw Offset: " + _cameraYawOffset);
+		Debug.Log("Pending Yaw Offset: " + _pendingYawOffset);
+		if (_isTurningInPlace)
+		{
+			if (Mathf.Abs(_cameraYawOffset / MaxYawOffset) >= 2f)
+			{
+				_forceControllerTurn = true;
+			}
+			else
+			{
+				_forceControllerTurn = false;
+			}
+
+			if (!IsInState("Right Turn 90") && !IsInState("Left Turn 90"))
+			{
+				transform.eulerAngles = new Vector3(0f, transform.eulerAngles.y + _pendingYawOffset, 0f);
+				_cameraYawOffset -= _pendingYawOffset;
+				_isTurningInPlace = false;
+				_pendingYawOffset = 0f;
+				_forceControllerTurn = false;
+			}
+		}
 		CameraRotation();
 	}
 
@@ -299,10 +327,10 @@ public class FirstPersonController : MonoBehaviour
 
 		if (!_isStanceTransitioning) return;
 
-		// --- Preserve foot position during transition ---
-		float oldHeight = _controller.height;
-		float oldCenterY = _controller.center.y;
-		Vector3 footPosBefore = transform.position + Vector3.up * (oldCenterY - oldHeight / 2f);
+		// // --- Preserve foot position during transition ---
+		// float oldHeight = _controller.height;
+		// float oldCenterY = _controller.center.y;
+		// Vector3 footPosBefore = transform.position + Vector3.up * (oldCenterY - oldHeight / 2f);
 
 		// Smoothly move height and center towards target stance
 		_controller.height = Mathf.MoveTowards(_controller.height, _targetStance.Height, TransitionSpeed * Time.deltaTime);
@@ -310,12 +338,12 @@ public class FirstPersonController : MonoBehaviour
 		center.y = Mathf.MoveTowards(center.y, _targetStance.CenterY, TransitionSpeed * Time.deltaTime);
 		_controller.center = center;
 
-		// Calculate new foot position and offset transform to keep feet in place
-		float newHeight = _controller.height;
-		float newCenterY = _controller.center.y;
-		Vector3 footPosAfter = transform.position + Vector3.up * (newCenterY - newHeight / 2f);
-		Vector3 footOffset = footPosBefore - footPosAfter;
-		transform.position += footOffset;
+		// // Calculate new foot position and offset transform to keep feet in place
+		// float newHeight = _controller.height;
+		// float newCenterY = _controller.center.y;
+		// Vector3 footPosAfter = transform.position + Vector3.up * (newCenterY - newHeight / 2f);
+		// Vector3 footOffset = footPosBefore - footPosAfter;
+		// transform.position += footOffset;
 
 		// Check if transition is complete
 		if (Mathf.Approximately(_controller.height, _targetStance.Height) &&
@@ -391,25 +419,116 @@ public class FirstPersonController : MonoBehaviour
 	private void CameraRotation()
 	{
 		float deltaTimeMultiplier = IsCurrentDeviceMouse ? 1.0f : Time.deltaTime;
+		bool isIdle = _input.move == Vector2.zero && Grounded && _speed < 0.05f;
 
-		// Body rotates instantly by input
-		if (_input.look.sqrMagnitude >= _threshold)
+		// Vertical (pitch)
+		_cinemachineTargetPitch += _input.look.y * RotationSpeed * deltaTimeMultiplier;
+		_cinemachineTargetPitch = ClampAngle(_cinemachineTargetPitch, BottomClamp, TopClamp);
+
+		if (isIdle)
 		{
-			// Vertical (pitch)
-			_cinemachineTargetPitch += _input.look.y * RotationSpeed * deltaTimeMultiplier;
-			_cinemachineTargetPitch = ClampAngle(_cinemachineTargetPitch, BottomClamp, TopClamp);
+			// At the start of CameraRotation(), after calculating mouseX:
+			float mouseX = _input.look.x * RotationSpeed * deltaTimeMultiplier;
 
-			// Horizontal (yaw): rotate body instantly
+			// Smooth mouseX using BodyYawLerpSpeed
+			_smoothedMouseX = Mathf.Lerp(_smoothedMouseX, mouseX, BodyYawLerpSpeed * Time.deltaTime);
+
+			// Then use _smoothedMouseX everywhere you currently use mouseX:
+			if (_forceControllerTurn)
+			{
+				transform.eulerAngles = new Vector3(0f, transform.eulerAngles.y + _smoothedMouseX, 0f);
+				float max = 2f * MaxYawOffset;
+				_cameraYawOffset = Mathf.Clamp(_cameraYawOffset, -max, max);
+				CameraPivot.localRotation = Quaternion.Euler(0f, _cameraYawOffset, 0f);
+			}
+			else
+			{
+				// Normal camera pivot look
+				_cameraYawOffset += _smoothedMouseX;
+				CameraPivot.localRotation = Quaternion.Euler(0f, _cameraYawOffset, 0f);
+
+				// Snap turn if offset exceeds threshold
+				if (!_isTurningInPlace && Mathf.Abs(_cameraYawOffset) >= MaxYawOffset)
+				{
+					float snap = MaxYawOffset * Mathf.Sign(_cameraYawOffset);
+					if (_cameraYawOffset > 0)
+						_animator.SetTrigger("TurnRight90");
+					else
+						_animator.SetTrigger("TurnLeft90");
+					_isTurningInPlace = true;
+					_pendingYawOffset = snap;
+				}
+			}
+		}
+		else
+		{
+			// When moving, instantly align controller to camera, then rotate as usual
+			transform.eulerAngles = new Vector3(0f, transform.eulerAngles.y + _cameraYawOffset, 0f);
+			_cameraYawOffset = 0f;
+			CameraPivot.localRotation = Quaternion.identity;
+
+			// Now apply look input as usual
 			float bodyYaw = transform.eulerAngles.y + _input.look.x * RotationSpeed * deltaTimeMultiplier;
 			transform.eulerAngles = new Vector3(0f, bodyYaw, 0f);
 		}
 
-		// Camera yaw lerps toward body yaw
-		_cameraYaw = Mathf.LerpAngle(_cameraYaw, transform.eulerAngles.y, Time.deltaTime * BodyYawLerpSpeed);
+		// Apply pitch to CinemachineCameraTarget (local X)
+		CinemachineCameraTarget.transform.localRotation = Quaternion.Euler(_cinemachineTargetPitch, 0f, 0f);
 
-		// Apply pitch to camera target (local X), yaw to camera target (local Y)
-		CinemachineCameraTarget.transform.localRotation = Quaternion.Euler(_cinemachineTargetPitch, _cameraYaw - transform.eulerAngles.y, 0f);
+		// Link yaw offset to animator parameter for upper body twist
+		_animator.SetFloat("YawOffset", _cameraYawOffset);
 	}
+
+	// private void CameraRotation()
+	// {
+	// 	float deltaTimeMultiplier = IsCurrentDeviceMouse ? 1.0f : Time.deltaTime;
+
+	// 	// Only allow camera yaw offset when idle (not moving)
+	// 	bool isIdle = _input.move == Vector2.zero;
+
+	// 	if (_input.look.sqrMagnitude >= _threshold)
+	// 	{
+	// 		// Vertical (pitch)
+	// 		_cinemachineTargetPitch += _input.look.y * RotationSpeed * deltaTimeMultiplier;
+	// 		_cinemachineTargetPitch = ClampAngle(_cinemachineTargetPitch, BottomClamp, TopClamp);
+
+	// 		if (isIdle)
+	// 		{
+	// 			// Add to yaw offset, clamp to ±MaxYawOffset
+	// 			_cameraYawOffset += _input.look.x * RotationSpeed * deltaTimeMultiplier;
+	// 			_cameraYawOffset = Mathf.Clamp(_cameraYawOffset, -MaxYawOffset, MaxYawOffset);
+
+	// 			// Only trigger if not already turning
+	// 			if (!_isTurningInPlace && Mathf.Abs(_cameraYawOffset) >= MaxYawOffset)
+	// 			{
+	// 				if (_cameraYawOffset > 0)
+	// 				{
+	// 					_animator.SetTrigger("TurnRight90");
+	// 					Debug.Log("Triggering Right Turn Animation");
+	// 				}
+	// 				else
+	// 				{
+	// 					_animator.SetTrigger("TurnLeft90");
+	// 					Debug.Log("Triggering Left Turn Animation");
+	// 				}
+	// 				_isTurningInPlace = true;
+	// 				_pendingYawOffset = _cameraYawOffset; // Store for later
+	// 			}
+	// 		}
+	// 		else
+	// 		{
+	// 			// If moving, rotate body instantly and reset offset
+	// 			float bodyYaw = transform.eulerAngles.y + _input.look.x * RotationSpeed * deltaTimeMultiplier;
+	// 			transform.eulerAngles = new Vector3(0f, bodyYaw, 0f);
+	// 			_cameraYawOffset = 0f;
+	// 		}
+	// 	}
+
+	// 	// Apply pitch and yaw offset to camera target
+	// 	CinemachineCameraTarget.transform.localRotation = Quaternion.Euler(_cinemachineTargetPitch, _cameraYawOffset, 0f);
+	// 	// Link yaw offset to animator parameter
+	// 	_animator.SetFloat("YawOffset", _cameraYawOffset);
+	// }
 
 	private void ResetJumpFlags()
 	{
@@ -768,12 +887,10 @@ public class FirstPersonController : MonoBehaviour
 				if (HasGroundClearance())
 				{
 					SetStance(PlayerStance.Standing);
-					Debug.Log("miaou miaou - THERE IS enough space to stand up");
 				}
 				else
 				{
 					SetStance(PlayerStance.Crouching);
-					Debug.Log("miaou miaou - not enough space to stand up");
 				}
 				return;
 			}
